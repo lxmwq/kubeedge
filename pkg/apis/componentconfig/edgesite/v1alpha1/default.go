@@ -76,7 +76,7 @@ func NewDefaultEdgeSiteConfig() *EdgeSiteConfig {
 					UpdateNode:                 constants.DefaultUpdateNodeBuffer,
 					DeletePod:                  constants.DefaultDeletePodBuffer,
 				},
-				Context: &cloudcoreconfig.EdgeControllerContext{
+				Context: &cloudcoreconfig.ControllerContext{
 					SendModule:     metaconfig.ModuleNameMetaManager,
 					ReceiveModule:  metaconfig.ModuleNameEdgeController,
 					ResponseModule: metaconfig.ModuleNameMetaManager,
@@ -94,6 +94,7 @@ func NewDefaultEdgeSiteConfig() *EdgeSiteConfig {
 					QueryNodeWorkers:                  constants.DefaultQueryNodeWorkers,
 					UpdateNodeWorkers:                 constants.DefaultUpdateNodeWorkers,
 					DeletePodWorkers:                  constants.DefaultDeletePodWorkers,
+					UpdateRuleStatusWorkers:           constants.DefaultUpdateRuleStatusWorkers,
 				},
 			},
 			Edged: &edgecoreconfig.Edged{
@@ -112,6 +113,7 @@ func NewDefaultEdgeSiteConfig() *EdgeSiteConfig {
 				RuntimeRequestTimeout:       constants.DefaultRuntimeRequestTimeout,
 				HostnameOverride:            hostnameOverride,
 				RegisterNode:                true,
+				ConcurrentConsumers:         constants.DefaultConcurrentConsumers,
 				RegisterNodeNamespace:       constants.DefaultRegisterNodeNamespace,
 				DevicePluginEnabled:         false,
 				GPUPluginEnabled:            false,

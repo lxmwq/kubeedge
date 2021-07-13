@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog"
-
 	"github.com/google/uuid"
+	"k8s.io/klog/v2"
+
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
 	connect "github.com/kubeedge/kubeedge/edge/pkg/common/cloudconnection"
@@ -22,6 +22,10 @@ var (
 	ActionCallBack map[string]CallBack
 )
 
+func init() {
+	initActionCallBack()
+}
+
 //CommWorker deal app response event
 type CommWorker struct {
 	Worker
@@ -30,7 +34,6 @@ type CommWorker struct {
 
 //Start worker
 func (cw CommWorker) Start() {
-	initActionCallBack()
 	for {
 		select {
 		case msg, ok := <-cw.ReceiverChan:

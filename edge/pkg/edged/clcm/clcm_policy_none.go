@@ -26,7 +26,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	internalapi "k8s.io/cri-api/pkg/apis"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/containermap"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
@@ -54,7 +54,6 @@ func NewContainerLifecycleManager(kubeletRootDir string) (ContainerLifecycleMana
 	clcm.cpuManager, err = cpumanager.NewManager(
 		PolicyNone,
 		reconcilePeriod,
-		nil,
 		nil,
 		cpuset.NewCPUSet(),
 		result,

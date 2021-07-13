@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
+	messagepkg "github.com/kubeedge/kubeedge/edge/pkg/common/message"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtclient"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcommon"
@@ -85,7 +86,12 @@ func dealDeviceStateUpdate(context *dtcontext.DTContext, resource string, msg in
 	if !ok {
 		return nil, nil
 	}
-	if strings.Compare("online", updatedDevice.State) != 0 && strings.Compare("offline", updatedDevice.State) != 0 && strings.Compare("unknown", updatedDevice.State) != 0 {
+
+	// state refers to definition in mappers-go/pkg/common/const.go
+	state := strings.ToLower(updatedDevice.State)
+	switch state {
+	case "online", "offline", "ok", "unknown", "disconnected":
+	default:
 		return nil, nil
 	}
 	lastOnline := time.Now().Format("2006-01-02 15:04:05")
@@ -110,13 +116,13 @@ func dealDeviceStateUpdate(context *dtcontext.DTContext, resource string, msg in
 	context.Send(device.ID,
 		dtcommon.SendToEdge,
 		dtcommon.CommModule,
-		context.BuildModelMessage(modules.BusGroup, "", topic, "publish", payload))
+		context.BuildModelMessage(modules.BusGroup, "", topic, messagepkg.OperationPublish, payload))
 
-	msgResource := "device/" + device.ID + "/state"
+	msgResource := "device/" + device.ID + dtcommon.DeviceETStateUpdateSuffix
 	context.Send(deviceID,
 		dtcommon.SendToCloud,
 		dtcommon.CommModule,
-		context.BuildModelMessage("resource", "", msgResource, "update", string(payload)))
+		context.BuildModelMessage("resource", "", msgResource, model.UpdateOperation, string(payload)))
 	return nil, nil
 }
 
@@ -177,7 +183,7 @@ func UpdateDeviceAttr(context *dtcontext.DTContext, deviceID string, attributes 
 			}
 			topic := dtcommon.DeviceETPrefix + deviceID + dtcommon.DeviceETUpdatedSuffix
 			context.Send(deviceID, dtcommon.SendToEdge, dtcommon.CommModule,
-				context.BuildModelMessage(modules.BusGroup, "", topic, "publish", payload))
+				context.BuildModelMessage(modules.BusGroup, "", topic, messagepkg.OperationPublish, payload))
 		}
 	}
 

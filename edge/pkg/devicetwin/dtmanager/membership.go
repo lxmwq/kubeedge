@@ -7,9 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
+	messagepkg "github.com/kubeedge/kubeedge/edge/pkg/common/message"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtclient"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcommon"
@@ -72,6 +73,7 @@ func getRemoveList(context *dtcontext.DTContext, devices []dttype.Device) []dtty
 		for _, v := range devices {
 			if strings.Compare(v.ID, key.(string)) == 0 {
 				isExist = true
+				break
 			}
 		}
 		if !isExist {
@@ -107,7 +109,7 @@ func dealMembershipDetail(context *dtcontext.DTContext, resource string, msg int
 	addDevice(context, devices.Devices, baseMessage, isDelta)
 	toRemove = getRemoveList(context, devices.Devices)
 
-	if toRemove != nil || len(toRemove) != 0 {
+	if len(toRemove) != 0 {
 		removeDevice(context, toRemove, baseMessage, isDelta)
 	}
 	klog.Info("Deal node detail info successful")
@@ -243,7 +245,7 @@ func addDevice(context *dtcontext.DTContext, toAdd []dttype.Device, baseMessage 
 			context.Send("",
 				dtcommon.SendToEdge,
 				dtcommon.CommModule,
-				context.BuildModelMessage(modules.BusGroup, "", topic, "publish", result))
+				context.BuildModelMessage(modules.BusGroup, "", topic, messagepkg.OperationPublish, result))
 		}
 		if delta {
 			context.Unlock(device.ID)
@@ -297,7 +299,7 @@ func removeDevice(context *dtcontext.DTContext, toRemove []dttype.Device, baseMe
 			context.Send("",
 				dtcommon.SendToEdge,
 				dtcommon.CommModule,
-				context.BuildModelMessage(modules.BusGroup, "", topic, "publish", result))
+				context.BuildModelMessage(modules.BusGroup, "", topic, messagepkg.OperationPublish, result))
 		}
 
 		klog.Infof("Remove device %s successful", device.ID)
@@ -346,7 +348,7 @@ func dealMembershipGetInner(context *dtcontext.DTContext, payload []byte) error 
 	context.Send("",
 		dtcommon.SendToEdge,
 		dtcommon.CommModule,
-		context.BuildModelMessage(modules.BusGroup, "", topic, "publish", result))
+		context.BuildModelMessage(modules.BusGroup, "", topic, messagepkg.OperationPublish, result))
 
 	return nil
 }

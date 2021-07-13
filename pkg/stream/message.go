@@ -23,7 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type MessageType uint64
@@ -65,10 +65,6 @@ func NewMessage(id uint64, messType MessageType, data []byte) *Message {
 		MessageType: messType,
 		Data:        data,
 	}
-}
-
-func (m *Message) WriteTo(tunneler SafeWriteTunneler) error {
-	return tunneler.WriteMessage(m)
 }
 
 func (m *Message) Bytes() []byte {

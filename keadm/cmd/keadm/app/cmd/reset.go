@@ -24,13 +24,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	phases "k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/reset"
 	utilruntime "k8s.io/kubernetes/cmd/kubeadm/app/util/runtime"
 	utilsexec "k8s.io/utils/exec"
 
 	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
-	types "github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
 	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/util"
 )
 
@@ -56,7 +55,7 @@ func newResetOptions() *common.ResetOptions {
 }
 
 // NewKubeEdgeReset represents the reset command
-func NewKubeEdgeReset(out io.Writer, reset *types.ResetOptions) *cobra.Command {
+func NewKubeEdgeReset(out io.Writer, reset *common.ResetOptions) *cobra.Command {
 	IsEdgeNode := false
 	if reset == nil {
 		reset = newResetOptions()
@@ -68,15 +67,16 @@ func NewKubeEdgeReset(out io.Writer, reset *types.ResetOptions) *cobra.Command {
 		Long:    resetLongDescription,
 		Example: resetExample,
 		PreRunE: func(cmd *cobra.Command, args []string) error {
-			whoRunning, err := util.IsCloudCore()
+			whoRunning, err := util.RunningModule()
 			if err != nil {
 				return err
 			}
 			switch whoRunning {
-			case types.KubeEdgeEdgeRunning:
+			case common.KubeEdgeEdgeRunning:
 				IsEdgeNode = true
-			case types.NoneRunning:
-				return fmt.Errorf("None of KubeEdge components are running in this host")
+			case common.NoneRunning:
+				fmt.Println("None of KubeEdge components are running in this host, exit")
+				os.Exit(0)
 			}
 			return nil
 		},
@@ -122,7 +122,7 @@ func NewKubeEdgeReset(out io.Writer, reset *types.ResetOptions) *cobra.Command {
 // TearDownKubeEdge will bring down either cloud or edge components,
 // depending upon in which type of node it is executed
 func TearDownKubeEdge(isEdgeNode bool, kubeConfig string) error {
-	var ke types.ToolsInstaller
+	var ke common.ToolsInstaller
 	ke = &util.KubeCloudInstTool{Common: util.Common{KubeConfig: kubeConfig}}
 	if isEdgeNode {
 		ke = &util.KubeEdgeInstTool{Common: util.Common{}}
@@ -160,7 +160,12 @@ func RemoveContainers(isEdgeNode bool, execer utilsexec.Interface) error {
 }
 
 func cleanDirectories(isEdgeNode bool) error {
-	var dirToClean = []string{"/var/lib/edged", "/etc/kubeedge"}
+	var dirToClean = []string{
+		util.KubeEdgePath,
+		util.KubeEdgeLogPath,
+		util.KubeEdgeSocketPath,
+		util.EdgeRootDir,
+	}
 
 	if isEdgeNode {
 		dirToClean = append(dirToClean, "/var/lib/dockershim", "/var/run/kubernetes", "/var/lib/cni")
@@ -175,7 +180,7 @@ func cleanDirectories(isEdgeNode bool) error {
 	return nil
 }
 
-func addResetFlags(cmd *cobra.Command, resetOpts *types.ResetOptions) {
+func addResetFlags(cmd *cobra.Command, resetOpts *common.ResetOptions) {
 	cmd.Flags().StringVar(&resetOpts.Kubeconfig, common.KubeConfig, resetOpts.Kubeconfig,
 		"Use this key to set kube-config path, eg: $HOME/.kube/config")
 	cmd.Flags().BoolVar(&resetOpts.Force, "force", resetOpts.Force,

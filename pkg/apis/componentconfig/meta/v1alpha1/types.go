@@ -24,6 +24,7 @@ const (
 	ModuleNameEdgeController   ModuleName = "edgecontroller"
 	ModuleNameDeviceController ModuleName = "devicecontroller"
 	ModuleNameCloudHub         ModuleName = "cloudhub"
+	ModuleNameRouter           ModuleName = "router"
 )
 
 // Available modules for EdgeCore
@@ -36,7 +37,6 @@ const (
 	ModuleNameEdged       ModuleName = "edged"
 	ModuleNameTwin        ModuleName = "twin"
 	ModuleNameDBTest      ModuleName = "dbTest"
-	ModuleNameEdgeMesh    ModuleName = "edgemesh"
 )
 
 // Available modules group

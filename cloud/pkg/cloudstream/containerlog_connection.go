@@ -22,9 +22,9 @@ import (
 	"io"
 	"net"
 
-	"k8s.io/klog"
-
 	"github.com/emicklei/go-restful"
+	"k8s.io/klog/v2"
+
 	"github.com/kubeedge/kubeedge/common/constants"
 	"github.com/kubeedge/kubeedge/pkg/stream"
 )
@@ -113,8 +113,8 @@ func (l *ContainerLogsConnection) Serve() error {
 			klog.Infof("%s send close message to edge successfully", l.String())
 			return nil
 		case <-l.EdgePeerDone():
-			klog.Infof("%s find edge peer done, so stop this connection", l.String())
-			return nil
+			err := fmt.Errorf("%s find edge peer done, so stop this connection", l.String())
+			return err
 		}
 	}
 }

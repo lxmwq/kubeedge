@@ -9,16 +9,22 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
+    timeout-minutes: 30
     name: Verify vendor, licenses, do lint
+    env:
+      GOPATH: /home/runner/work/${{ github.repository }}
     steps:
       - name: Install Go
         uses: actions/setup-go@v2
         with:
           go-version: 1.14.x
 
-      - name: Check out code into the Go module directory
+      - name: Checkout code
         uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          path: ./src/github.com/${{ github.repository }}
 
       - uses: actions/cache@v2
         with:
@@ -28,15 +34,17 @@ jobs:
       - name: Install dependences
         run: |
           sudo apt-get install -y jq
-          curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | BINARY=golangci-lint sh -s -- -d -b $(go env GOPATH)/bin v1.23.7
 
       - name: Run verify test
         run: make verify
+        working-directory: ./src/github.com/${{ github.repository }}
 
       - name: Run lint test
         run: make lint
+        working-directory: ./src/github.com/${{ github.repository }}
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
+    timeout-minutes: 30
     name: Multiple build
     steps:
       - name: Install Go
@@ -50,16 +58,16 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
       - name: Install dependences
-        run: sudo apt-get install -y upx-ucl gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-arm-linux-gnueabi libc6-dev-armel-cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-arm-linux-gnueabi libc6-dev-armel-cross
 
-      - name: Checkout code into the Go module directory
+      - name: Checkout code
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
 
       - run: make
-
-      - run: make bluetoothdevice
 
       - run: make smallbuild
 
@@ -68,7 +76,8 @@ jobs:
       - run: make crossbuild GOARM=GOARM7
 
   basic_test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
+    timeout-minutes: 30
     name: Unit test, integration test edge
     env:
       GO111MODULE: on
@@ -87,7 +96,7 @@ jobs:
         run: |
           command -v ginkgo || go get github.com/onsi/ginkgo/ginkgo
 
-      - name: Check out code into the Go module directory
+      - name: Checkout code
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
@@ -97,7 +106,8 @@ jobs:
       - run: make integrationtest
 
   e2e_test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
+    timeout-minutes: 30
     name: E2e test
     env:
       GO111MODULE: on
@@ -115,10 +125,10 @@ jobs:
       - name: Install dependences
         run: |
           command -v ginkgo || go get github.com/onsi/ginkgo/ginkgo
-          command -v kind || go get sigs.k8s.io/kind@v0.9.0
+          go get sigs.k8s.io/kind@v0.9.0
           curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.19.3/bin/linux/amd64/kubectl && sudo install kubectl /usr/local/bin/kubectl
 
-      - name: Check out code into the Go module directory
+      - name: Checkout code
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
@@ -126,7 +136,8 @@ jobs:
       - run: make e2e
 
   keadm_e2e_test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
+    timeout-minutes: 30
     name: Keadm e2e test
     env:
       GO111MODULE: on
@@ -144,14 +155,14 @@ jobs:
       - name: Install dependences
         run: |
           command -v ginkgo || go get github.com/onsi/ginkgo/ginkgo
-          command -v kind || go get sigs.k8s.io/kind@v0.9.0
+          go get sigs.k8s.io/kind@v0.9.0
           curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.19.3/bin/linux/amd64/kubectl && sudo install kubectl /usr/local/bin/kubectl
           export RELEASE_VERSION=$(wget -qO - https://kubeedge.io/latestversion | cat)
           sudo wget -qP /etc/kubeedge https://github.com/kubeedge/kubeedge/releases/download/${RELEASE_VERSION}/checksum_kubeedge-${RELEASE_VERSION}-linux-amd64.tar.gz.txt
           sudo wget -qP /etc/kubeedge https://github.com/kubeedge/kubeedge/releases/download/${RELEASE_VERSION}/kubeedge-${RELEASE_VERSION}-linux-amd64.tar.gz
           echo "$(cat /etc/kubeedge/checksum_kubeedge-${RELEASE_VERSION}-linux-amd64.tar.gz.txt) /etc/kubeedge/kubeedge-${RELEASE_VERSION}-linux-amd64.tar.gz" | sha512sum -c
 
-      - name: Check out code into the Go module directory
+      - name: Checkout code
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
@@ -159,7 +170,8 @@ jobs:
       - run: make keadm_e2e
 
   docker_build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-18.04
+    timeout-minutes: 30
     name: Multiple docker image build
     steps:
       - name: Install Go
@@ -172,7 +184,7 @@ jobs:
           path: ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
-      - name: Check out code into the Go module directory
+      - name: Checkout code
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
@@ -183,6 +195,6 @@ jobs:
 
       - run: make edgeimage ARCH="amd64"
 
-      - run: make edgesiteimage ARCH="amd64"
+      - run: make edgesite-agent-image ARCH="amd64"
 
-      - run: make bluetoothdevice_image
+      - run: make edgesite-server-image ARCH="amd64"

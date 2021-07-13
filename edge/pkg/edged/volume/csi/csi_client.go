@@ -44,7 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume"
 )
 
@@ -217,8 +217,6 @@ func (c *csiDriverClient) NodeGetInfo(ctx context.Context) (
 		var getNodeInfoError error
 		if c.nodeV1ClientCreator != nil {
 			nodeID, maxVolumePerNode, accessibleTopology, getNodeInfoError = c.nodeGetInfoV1(ctx)
-		} else if c.nodeV1ClientCreator != nil {
-			nodeID, maxVolumePerNode, accessibleTopology, getNodeInfoError = c.nodeGetInfoV0(ctx)
 		}
 		if nodeID != "" {
 			return true, nil

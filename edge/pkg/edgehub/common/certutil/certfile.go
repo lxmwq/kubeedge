@@ -4,14 +4,10 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
+
 	"github.com/pkg/errors"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/keyutil"
-)
-
-const (
-	// CertificateBlockType is a possible value for pem.Block.Type.
-	CertificateBlockType = "CERTIFICATE"
 )
 
 func WriteKeyAndCert(keyFile string, certFile string, key crypto.Signer, cert *x509.Certificate) error {
@@ -59,7 +55,7 @@ func WriteCert(certPath string, cert *x509.Certificate) error {
 // EncodeCertPEM returns PEM-encoded certificate data
 func EncodeCertPEM(cert *x509.Certificate) []byte {
 	block := pem.Block{
-		Type:  CertificateBlockType,
+		Type:  certutil.CertificateBlockType,
 		Bytes: cert.Raw,
 	}
 	return pem.EncodeToMemory(&block)
