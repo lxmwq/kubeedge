@@ -17,13 +17,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"k8s.io/klog"
 	"os"
 	"strings"
 
-	"github.com/astaxie/beego/orm"
 	"github.com/spf13/cobra"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,16 +30,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/printers"
 	api "k8s.io/kubernetes/pkg/apis/core"
+	k8s_v1_api "k8s.io/kubernetes/pkg/apis/core/v1"
 	k8sprinters "k8s.io/kubernetes/pkg/printers"
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	"k8s.io/kubernetes/pkg/printers/storage"
 
-	"github.com/kubeedge/beehive/pkg/common/util"
+	edgecoreCfg "github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
 	"github.com/kubeedge/beehive/pkg/core/model"
 	"github.com/kubeedge/kubeedge/common/constants"
-	"github.com/kubeedge/kubeedge/edge/pkg/common/dbm"
-	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao"
-	edgecoreCfg "github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
+	commonmsg "github.com/kubeedge/kubeedge/edge/pkg/common/message"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/dbclient"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/models"
 )
 
 const (
@@ -86,13 +86,12 @@ keadm debug get all -o yaml`
 		"endpoint":   constants.ResourceTypeEndpoints,
 		"endpoints":  constants.ResourceTypeEndpoints,
 	}
+	ms = dbclient.NewMetaService()
 )
 
 // NewCmdDebugGet returns keadm debug get command.
-func NewCmdDebugGet(out io.Writer, getOption *GetOptions) *cobra.Command {
-	if getOption == nil {
-		getOption = NewGetOptions()
-	}
+func NewCmdDebugGet() *cobra.Command {
+	getOption := NewGetOptions()
 
 	cmd := &cobra.Command{
 		Use:     "get",
@@ -103,7 +102,7 @@ func NewCmdDebugGet(out io.Writer, getOption *GetOptions) *cobra.Command {
 			if err := getOption.Validate(args); err != nil {
 				CheckErr(err, fatal)
 			}
-			if err := getOption.Run(args, out); err != nil {
+			if err := getOption.Run(args); err != nil {
 				CheckErr(err, fatal)
 			}
 		},
@@ -168,7 +167,7 @@ type GetOptions struct {
 }
 
 // Run performs the get operation.
-func (g *GetOptions) Run(args []string, out io.Writer) error {
+func (g *GetOptions) Run(args []string) error {
 	resType := args[0]
 	resNames := args[1:]
 	results, err := g.queryDataFromDatabase(availableResources[resType], resNames)
@@ -183,7 +182,7 @@ func (g *GetOptions) Run(args []string, out io.Writer) error {
 		}
 	}
 
-	if g.AllNamespace {
+	if g.AllNamespace && resType != "nodes" && resType != "node" {
 		if err := g.PrintFlags.EnsureWithNamespace(); err != nil {
 			return err
 		}
@@ -195,16 +194,16 @@ func (g *GetOptions) Run(args []string, out io.Writer) error {
 	}
 
 	if len(results) == 0 {
-		if _, err := fmt.Fprintf(out, "No resources found in %v namespace.\n", g.Namespace); err != nil {
+		if _, err := fmt.Printf("No resources found in %v namespace.\n", g.Namespace); err != nil {
 			return err
 		}
 		return nil
 	}
 	if *g.PrintFlags.OutputFormat == "" || *g.PrintFlags.OutputFormat == FormatTypeWIDE {
-		return HumanReadablePrint(results, printer, out)
+		return HumanReadablePrint(results, printer)
 	}
 
-	return JSONYamlPrint(results, printer, out)
+	return JSONYamlPrint(results, printer)
 }
 
 // IsAllowedFormat verification support format
@@ -222,37 +221,37 @@ func (g *GetOptions) IsAllowedFormat(f string) bool {
 // Validate checks the set of flags provided by the user.
 func (g *GetOptions) Validate(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("You must specify the type of resource to get. ")
+		return fmt.Errorf("you must specify the type of resource to get. ")
 	}
 	if !isAvailableResources(args[0]) {
-		return fmt.Errorf("Unrecognized resource type: %v. ", args[0])
+		return fmt.Errorf("unrecognized resource type: %v. ", args[0])
 	}
 	if len(g.DataPath) == 0 {
-		fmt.Printf("Not specified the EdgeCore database path, use the default path: %v. ", g.DataPath)
+		fmt.Printf("not specified the EdgeCore database path, use the default path: %v. ", g.DataPath)
 	}
 	if !isFileExist(g.DataPath) {
-		return fmt.Errorf("EdgeCore database file %v not exist. ", g.DataPath)
+		return fmt.Errorf("edgeCore database file %v not exist. ", g.DataPath)
 	}
 
 	if err := InitDB(edgecoreCfg.DataBaseDriverName, edgecoreCfg.DataBaseAliasName, g.DataPath); err != nil {
-		return fmt.Errorf("Failed to initialize database: %v ", err)
+		return fmt.Errorf("failed to initialize database: %v ", err)
 	}
 	if len(*g.PrintFlags.OutputFormat) > 0 {
 		format := strings.ToLower(*g.PrintFlags.OutputFormat)
 		g.PrintFlags.OutputFormat = &format
 		if !g.IsAllowedFormat(*g.PrintFlags.OutputFormat) {
-			return fmt.Errorf("Invalid output format: %v, currently supports formats such as yaml|json|wide. ", *g.PrintFlags.OutputFormat)
+			return fmt.Errorf("invalid output format: %v, currently supports formats such as yaml|json|wide. ", *g.PrintFlags.OutputFormat)
 		}
 	}
 	if args[0] == ResourceTypeAll && len(args) >= 2 {
-		return fmt.Errorf("You must specify only one resource. ")
+		return fmt.Errorf("you must specify only one resource. ")
 	}
 
 	return nil
 }
 
-func (g *GetOptions) queryDataFromDatabase(resType string, resNames []string) ([]dao.Meta, error) {
-	var result []dao.Meta
+func (g *GetOptions) queryDataFromDatabase(resType string, resNames []string) ([]models.Meta, error) {
+	var result []models.Meta
 
 	switch resType {
 	case model.ResourceTypePod:
@@ -289,23 +288,23 @@ func (g *GetOptions) queryDataFromDatabase(resType string, resNames []string) ([
 			result = append(result, value...)
 		}
 	default:
-		return nil, fmt.Errorf("Query resource type: %v in namespaces: %v failed. ", resType, g.Namespace)
+		return nil, fmt.Errorf("query resource type: %v in namespaces: %v failed. ", resType, g.Namespace)
 	}
 
 	return result, nil
 }
 
-func (g *GetOptions) getPodsFromDatabase(resNS string, resNames []string) ([]dao.Meta, error) {
-	var results []dao.Meta
+func (g *GetOptions) getPodsFromDatabase(resNS string, resNames []string) ([]models.Meta, error) {
+	var results []models.Meta
 	podJSON := make(map[string]interface{})
 	podStatusJSON := make(map[string]interface{})
 
-	podRecords, err := dao.QueryAllMeta("type", model.ResourceTypePod)
+	podRecords, err := ms.QueryAllMeta("type", model.ResourceTypePod)
 	if err != nil {
 		return nil, err
 	}
 	for _, v := range *podRecords {
-		namespaceParsed, _, _, _ := util.ParseResourceEdge(v.Key, model.QueryOperation)
+		namespaceParsed, _, _, _ := commonmsg.ParseResourceEdge(v.Key, model.QueryOperation)
 		if namespaceParsed != resNS && !g.AllNamespace {
 			continue
 		}
@@ -315,7 +314,7 @@ func (g *GetOptions) getPodsFromDatabase(resNS string, resNames []string) ([]dao
 
 		podKey := strings.Replace(v.Key, constants.ResourceSep+model.ResourceTypePod+constants.ResourceSep,
 			constants.ResourceSep+model.ResourceTypePodStatus+constants.ResourceSep, 1)
-		podStatusRecords, err := dao.QueryMeta("key", podKey)
+		podStatusRecords, err := ms.QueryMeta("key", podKey)
 		if err != nil {
 			return nil, err
 		}
@@ -341,17 +340,17 @@ func (g *GetOptions) getPodsFromDatabase(resNS string, resNames []string) ([]dao
 	return results, nil
 }
 
-func (g *GetOptions) getNodeFromDatabase(resNS string, resNames []string) ([]dao.Meta, error) {
-	var results []dao.Meta
+func (g *GetOptions) getNodeFromDatabase(resNS string, resNames []string) ([]models.Meta, error) {
+	var results []models.Meta
 	nodeJSON := make(map[string]interface{})
 	nodeStatusJSON := make(map[string]interface{})
 
-	nodeRecords, err := dao.QueryAllMeta("type", model.ResourceTypeNode)
+	nodeRecords, err := ms.QueryAllMeta("type", model.ResourceTypeNode)
 	if err != nil {
 		return nil, err
 	}
 	for _, v := range *nodeRecords {
-		namespaceParsed, _, _, _ := util.ParseResourceEdge(v.Key, model.QueryOperation)
+		namespaceParsed, _, _, _ := commonmsg.ParseResourceEdge(v.Key, model.QueryOperation)
 		if namespaceParsed != resNS && !g.AllNamespace {
 			continue
 		}
@@ -361,7 +360,7 @@ func (g *GetOptions) getNodeFromDatabase(resNS string, resNames []string) ([]dao
 
 		nodeKey := strings.Replace(v.Key, constants.ResourceSep+model.ResourceTypeNode+constants.ResourceSep,
 			constants.ResourceSep+model.ResourceTypeNodeStatus+constants.ResourceSep, 1)
-		nodeStatusRecords, err := dao.QueryMeta("key", nodeKey)
+		nodeStatusRecords, err := ms.QueryMeta("key", nodeKey)
 		if err != nil {
 			return nil, err
 		}
@@ -387,15 +386,15 @@ func (g *GetOptions) getNodeFromDatabase(resNS string, resNames []string) ([]dao
 	return results, nil
 }
 
-func (g *GetOptions) getResourceFromDatabase(resNS string, resNames []string, resType string) ([]dao.Meta, error) {
-	var results []dao.Meta
+func (g *GetOptions) getResourceFromDatabase(resNS string, resNames []string, resType string) ([]models.Meta, error) {
+	var results []models.Meta
 
-	resRecords, err := dao.QueryAllMeta("type", resType)
+	resRecords, err := ms.QueryAllMeta("type", resType)
 	if err != nil {
 		return nil, err
 	}
 	for _, v := range *resRecords {
-		namespaceParsed, _, _, _ := util.ParseResourceEdge(v.Key, model.QueryOperation)
+		namespaceParsed, _, _, _ := commonmsg.ParseResourceEdge(v.Key, model.QueryOperation)
 		if namespaceParsed != resNS && !g.AllNamespace {
 			continue
 		}
@@ -409,8 +408,8 @@ func (g *GetOptions) getResourceFromDatabase(resNS string, resNames []string, re
 }
 
 // FilterSelector filter resource by selector
-func FilterSelector(data []dao.Meta, selector string) ([]dao.Meta, error) {
-	var results []dao.Meta
+func FilterSelector(data []models.Meta, selector string) ([]models.Meta, error) {
+	var results []models.Meta
 	var jsonValue = make(map[string]interface{})
 
 	selectors, err := SplitSelectorParameters(selector)
@@ -458,22 +457,26 @@ func isFileExist(path string) bool {
 
 // InitDB Init DB info
 func InitDB(driverName, dbName, dataSource string) error {
-	if err := orm.RegisterDriver(driverName, orm.DRSqlite); err != nil {
-		return fmt.Errorf("Failed to register driver: %v ", err)
-	}
-	if err := orm.RegisterDataBase(
-		dbName,
-		driverName,
-		dataSource); err != nil {
-		return fmt.Errorf("Failed to register db: %v ", err)
-	}
-	orm.RegisterModel(new(dao.Meta))
+	// Initialize GORM database connection
+	var err error
+	var db *gorm.DB
 
-	// create orm
-	dbm.DBAccess = orm.NewOrm()
-	if err := dbm.DBAccess.Using(dbName); err != nil {
-		return fmt.Errorf("Using db access error %v ", err)
+	if driverName == "sqlite" {
+		// Use GORM's SQLite driver to connect to the database
+		db, err = gorm.Open(sqlite.Open(dataSource), &gorm.Config{})
+	} else {
+		return fmt.Errorf("unsupported driver: %v", driverName)
 	}
+
+	if err != nil {
+		return fmt.Errorf("failed to connect to the database: %v", err)
+	}
+
+	// Perform migrations (auto-create tables based on the models)
+	if err := db.AutoMigrate(&models.Meta{}); err != nil {
+		return fmt.Errorf("failed to auto-migrate the database: %v", err)
+	}
+
 	return nil
 }
 
@@ -505,7 +508,7 @@ func SplitSelectorParameters(args string) ([]Selector, error) {
 		if strings.Contains(label, "==") {
 			labs := strings.Split(label, "==")
 			if len(labs) != 2 {
-				return nil, fmt.Errorf("Arguments in selector form may not have more than one \"==\". ")
+				return nil, fmt.Errorf("arguments in selector form may not have more than one \"==\". ")
 			}
 			sel.Key = labs[0]
 			sel.Value = labs[1]
@@ -516,7 +519,7 @@ func SplitSelectorParameters(args string) ([]Selector, error) {
 		if strings.Contains(label, "!=") {
 			labs := strings.Split(label, "!=")
 			if len(labs) != 2 {
-				return nil, fmt.Errorf("Arguments in selector form may not have more than one \"!=\". ")
+				return nil, fmt.Errorf("arguments in selector form may not have more than one \"!=\". ")
 			}
 			sel.Key = labs[0]
 			sel.Value = labs[1]
@@ -527,7 +530,7 @@ func SplitSelectorParameters(args string) ([]Selector, error) {
 		if strings.Contains(label, "=") {
 			labs := strings.Split(label, "=")
 			if len(labs) != 2 {
-				return nil, fmt.Errorf("Arguments in selector may not have more than one \"=\". ")
+				return nil, fmt.Errorf("arguments in selector may not have more than one \"=\". ")
 			}
 			sel.Key = labs[0]
 			sel.Value = labs[1]
@@ -538,21 +541,18 @@ func SplitSelectorParameters(args string) ([]Selector, error) {
 	return results, nil
 }
 
-func HumanReadablePrint(results []dao.Meta, printer printers.ResourcePrinter, out io.Writer) error {
+func HumanReadablePrint(results []models.Meta, printer printers.ResourcePrinter) error {
 	res, err := ParseMetaToAPIList(results)
 	if err != nil {
-		klog.Fatal(err)
+		return err
 	}
 	for _, r := range res {
 		table, err := ConvertDataToTable(r)
 		if err != nil {
-			klog.Fatal(err)
+			return err
 		}
-		if err := printer.PrintObj(table, out); err != nil {
-			klog.Fatal(err)
-		}
-		if _, err := fmt.Fprintln(out); err != nil {
-			klog.Fatal(err)
+		if err := printer.PrintObj(table, os.Stdout); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -562,7 +562,7 @@ func HumanReadablePrint(results []dao.Meta, printer printers.ResourcePrinter, ou
 // Only use this type definition to get the table header processing handle,
 // and automatically obtain the ColumnDefinitions of the table according to the type
 // Only used by HumanReadablePrint.
-func ParseMetaToAPIList(metas []dao.Meta) (res []runtime.Object, err error) {
+func ParseMetaToAPIList(metas []models.Meta) (res []runtime.Object, err error) {
 	var (
 		podList       api.PodList
 		serviceList   api.ServiceList
@@ -571,73 +571,68 @@ func ParseMetaToAPIList(metas []dao.Meta) (res []runtime.Object, err error) {
 		endPointsList api.EndpointsList
 		nodeList      api.NodeList
 	)
-	value := make(map[string]interface{})
-
 	for _, v := range metas {
-		if err := json.Unmarshal([]byte(v.Value), &value); err != nil {
-			return nil, err
-		}
-		metadata, err := json.Marshal(value["metadata"])
 		switch v.Type {
 		case model.ResourceTypePod:
-			var pod api.Pod
-
+			var pod v1.Pod
+			var apiPod api.Pod
 			if err = json.Unmarshal([]byte(v.Value), &pod); err != nil {
 				return nil, err
 			}
-			if err = json.Unmarshal(metadata, &pod.ObjectMeta); err != nil {
+			if err := k8s_v1_api.Convert_v1_Pod_To_core_Pod(&pod, &apiPod, nil); err != nil {
 				return nil, err
 			}
-			podList.Items = append(podList.Items, pod)
+			podList.Items = append(podList.Items, apiPod)
 		case constants.ResourceTypeService:
-			var svc api.Service
-
-			if err != nil {
-				return nil, err
-			}
+			var svc v1.Service
+			var apiSvc api.Service
 			if err = json.Unmarshal([]byte(v.Value), &svc); err != nil {
 				return nil, err
 			}
-			if err = json.Unmarshal(metadata, &svc.ObjectMeta); err != nil {
+			if err := k8s_v1_api.Convert_v1_Service_To_core_Service(&svc, &apiSvc, nil); err != nil {
 				return nil, err
 			}
-			serviceList.Items = append(serviceList.Items, svc)
+			serviceList.Items = append(serviceList.Items, apiSvc)
 		case model.ResourceTypeSecret:
-			var secret api.Secret
+			var secret v1.Secret
+			var apiSecret api.Secret
 			if err = json.Unmarshal([]byte(v.Value), &secret); err != nil {
 				return nil, err
 			}
-			if err = json.Unmarshal(metadata, &secret.ObjectMeta); err != nil {
+			if err := k8s_v1_api.Convert_v1_Secret_To_core_Secret(&secret, &apiSecret, nil); err != nil {
 				return nil, err
 			}
-			secretList.Items = append(secretList.Items, secret)
+			secretList.Items = append(secretList.Items, apiSecret)
 		case model.ResourceTypeConfigmap:
-			var cm api.ConfigMap
+			var cm v1.ConfigMap
+			var apiCm api.ConfigMap
 			if err = json.Unmarshal([]byte(v.Value), &cm); err != nil {
 				return nil, err
 			}
-			if err = json.Unmarshal(metadata, &cm.ObjectMeta); err != nil {
+			if err := k8s_v1_api.Convert_v1_ConfigMap_To_core_ConfigMap(&cm, &apiCm, nil); err != nil {
 				return nil, err
 			}
-			configMapList.Items = append(configMapList.Items, cm)
+			configMapList.Items = append(configMapList.Items, apiCm)
 		case constants.ResourceTypeEndpoints:
-			var ep api.Endpoints
+			var ep v1.Endpoints
+			var apiEp api.Endpoints
 			if err = json.Unmarshal([]byte(v.Value), &ep); err != nil {
 				return nil, err
 			}
-			if err = json.Unmarshal(metadata, &ep.ObjectMeta); err != nil {
+			if err := k8s_v1_api.Convert_v1_Endpoints_To_core_Endpoints(&ep, &apiEp, nil); err != nil {
 				return nil, err
 			}
-			endPointsList.Items = append(endPointsList.Items, ep)
+			endPointsList.Items = append(endPointsList.Items, apiEp)
 		case model.ResourceTypeNode:
-			var no api.Node
+			var no v1.Node
+			var apiNo api.Node
 			if err = json.Unmarshal([]byte(v.Value), &no); err != nil {
 				return nil, err
 			}
-			if err = json.Unmarshal(metadata, &no.ObjectMeta); err != nil {
+			if err := k8s_v1_api.Convert_v1_Node_To_core_Node(&no, &apiNo, nil); err != nil {
 				return nil, err
 			}
-			nodeList.Items = append(nodeList.Items, no)
+			nodeList.Items = append(nodeList.Items, apiNo)
 		}
 	}
 	res = append(res, &podList, &serviceList, &secretList, &configMapList, &endPointsList, &nodeList)
@@ -653,7 +648,7 @@ func ConvertDataToTable(obj runtime.Object) (runtime.Object, error) {
 }
 
 // JSONYamlPrint Output the data in json|yaml format
-func JSONYamlPrint(results []dao.Meta, printer printers.ResourcePrinter, out io.Writer) error {
+func JSONYamlPrint(results []models.Meta, printer printers.ResourcePrinter) error {
 	var obj runtime.Object
 	list := v1.List{
 		TypeMeta: metav1.TypeMeta{
@@ -690,18 +685,14 @@ func JSONYamlPrint(results []dao.Meta, printer printers.ResourcePrinter, out io.
 	} else {
 		obj = objectList[0]
 	}
-	if err := PrintGeneric(printer, obj, out); err != nil {
-		return err
-	}
-
-	return nil
+	return PrintGeneric(printer, obj)
 }
 
 // ParseMetaToV1List Convert the data to the corresponding list type
 // The type definition used by apiserver does not have the omitempty definition of json, will introduce a lot of useless null information
 // Use v1 type definition to get data here
 // Only used by JSONYamlPrint.
-func ParseMetaToV1List(results []dao.Meta) ([]runtime.Object, error) {
+func ParseMetaToV1List(results []models.Meta) ([]runtime.Object, error) {
 	value := make(map[string]interface{})
 	list := make([]runtime.Object, 0)
 
@@ -847,14 +838,14 @@ func ParseMetaToV1List(results []dao.Meta) ([]runtime.Object, error) {
 			node.Kind = v.Type
 			list = append(list, node.DeepCopyObject())
 		default:
-			return nil, fmt.Errorf("Parsing failed, unrecognized type: %v. ", v.Type)
+			return nil, fmt.Errorf("parsing failed, unrecognized type: %v. ", v.Type)
 		}
 	}
 	return list, nil
 }
 
 // PrintGeneric Output object data to out stream through printer
-func PrintGeneric(printer printers.ResourcePrinter, obj runtime.Object, out io.Writer) error {
+func PrintGeneric(printer printers.ResourcePrinter, obj runtime.Object) error {
 	isList := meta.IsListType(obj)
 	if isList {
 		items, err := meta.ExtractList(obj)
@@ -880,7 +871,7 @@ func PrintGeneric(printer printers.ResourcePrinter, obj runtime.Object, out io.W
 		for _, item := range items {
 			list.Items = append(list.Items, *item.(*unstructured.Unstructured))
 		}
-		if err := printer.PrintObj(list, out); err != nil {
+		if err := printer.PrintObj(list, os.Stdout); err != nil {
 			return err
 		}
 	} else {
@@ -892,7 +883,7 @@ func PrintGeneric(printer printers.ResourcePrinter, obj runtime.Object, out io.W
 		if err := json.Unmarshal(data, &value); err != nil {
 			return err
 		}
-		if err := printer.PrintObj(&unstructured.Unstructured{Object: value}, out); err != nil {
+		if err := printer.PrintObj(&unstructured.Unstructured{Object: value}, os.Stdout); err != nil {
 			return err
 		}
 	}

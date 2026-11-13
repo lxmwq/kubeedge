@@ -25,6 +25,7 @@ source "${KUBEEDGE_ROOT}/hack/lib/init.sh"
 
 kubeedge::clean::cache(){
   unset GOARM
+  go clean -testcache
   go clean -cache
 }
 
@@ -32,5 +33,6 @@ kubeedge::clean::bin(){
   rm -rf $KUBEEDGE_OUTPUT_BINPATH/*
 }
 
+kubeedge::golang::verify_golang_version
 kubeedge::clean::cache
 kubeedge::clean::bin

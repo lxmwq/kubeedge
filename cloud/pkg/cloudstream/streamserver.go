@@ -17,19 +17,23 @@ limitations under the License.
 package cloudstream
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 
 	"github.com/emicklei/go-restful"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudstream/config"
+	"github.com/kubeedge/kubeedge/cloud/pkg/common/client"
+	"github.com/kubeedge/kubeedge/common/constants"
 	"github.com/kubeedge/kubeedge/pkg/stream/flushwriter"
 )
 
@@ -69,6 +73,18 @@ func (s *StreamServer) installDebugHandler() {
 	s.container.Add(ws)
 
 	ws = new(restful.WebService)
+	ws.Path("/attach")
+	ws.Route(ws.GET("/{podNamespace}/{podID}/{containerName}").
+		To(s.getAttach))
+	ws.Route(ws.POST("/{podNamespace}/{podID}/{containerName}").
+		To(s.getAttach))
+	ws.Route(ws.GET("/{podNamespace}/{podID}/{uid}/{containerName}").
+		To(s.getAttach))
+	ws.Route(ws.POST("/{podNamespace}/{podID}/{uid}/{containerName}").
+		To(s.getAttach))
+	s.container.Add(ws)
+
+	ws = new(restful.WebService)
 	ws.Path("/stats")
 	ws.Route(ws.GET("").
 		To(s.getMetrics))
@@ -89,23 +105,31 @@ func (s *StreamServer) installDebugHandler() {
 		To(s.getMetrics))
 	ws.Route(ws.GET("/cadvisor").
 		To(s.getMetrics))
+	ws.Route(ws.GET("/probes").
+		To(s.getMetrics))
+	ws.Route(ws.GET("/resource").
+		To(s.getMetrics))
 	s.container.Add(ws)
 }
 
 func (s *StreamServer) getContainerLogs(r *restful.Request, w *restful.Response) {
 	var err error
-
 	defer func() {
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			klog.Errorf(err.Error())
+			klog.Errorf("Failed to get container logs, err: %v", err)
 		}
 	}()
 
-	sessionKey := strings.Split(r.Request.Host, ":")[0]
+	sessionKey, err := s.getSessionKey(r.Request.URL.Path)
+	if err != nil {
+		err = fmt.Errorf("can not get session key: %v", err)
+		return
+	}
+
 	session, ok := s.tunnel.getSession(sessionKey)
 	if !ok {
-		err = fmt.Errorf("Can not find %v session ", sessionKey)
+		err = fmt.Errorf("can not find %v session ", sessionKey)
 		return
 	}
 
@@ -113,7 +137,7 @@ func (s *StreamServer) getContainerLogs(r *restful.Request, w *restful.Response)
 	w.WriteHeader(http.StatusOK)
 
 	if _, ok := w.ResponseWriter.(http.Flusher); !ok {
-		err = fmt.Errorf("Unable to convert %v into http.Flusher, cannot show logs", reflect.TypeOf(w))
+		err = fmt.Errorf("unable to convert %v into http.Flusher, cannot show logs", reflect.TypeOf(w))
 		return
 	}
 	fw := flushwriter.Wrap(w.ResponseWriter)
@@ -124,18 +148,21 @@ func (s *StreamServer) getContainerLogs(r *restful.Request, w *restful.Response)
 		session:      session,
 		ctx:          r.Request.Context(),
 		edgePeerStop: make(chan struct{}),
+		closeChan:    make(chan bool),
 	})
 	if err != nil {
-		klog.Errorf("Add apiserver connection into %s error %v", session.String(), err)
+		err = fmt.Errorf("add apiServer connection into %s error %v", session.String(), err)
 		return
 	}
 
 	defer func() {
-		session.DeleteAPIServerConnection(logConnection)
-		klog.Infof("Delete %s from %s", logConnection.String(), session.String())
+		if err != nil {
+			session.DeleteAPIServerConnection(logConnection)
+			klog.Infof("Delete %s from %s", logConnection.String(), session.String())
+		}
 	}()
 
-	if err := logConnection.Serve(); err != nil {
+	if err = logConnection.Serve(); err != nil {
 		err = fmt.Errorf("apiconnection Serve %s in %s error %v",
 			logConnection.String(), session.String(), err)
 		return
@@ -144,18 +171,25 @@ func (s *StreamServer) getContainerLogs(r *restful.Request, w *restful.Response)
 
 func (s *StreamServer) getMetrics(r *restful.Request, w *restful.Response) {
 	var err error
-
 	defer func() {
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			klog.Errorf(err.Error())
+			klog.Errorf("Failed to get metrics, err: %v", err)
 		}
 	}()
 
 	sessionKey := strings.Split(r.Request.Host, ":")[0]
+	if forwardedURI := r.Request.Header.Get("X-Forwarded-Uri"); forwardedURI != "" {
+		if t := strings.Split(forwardedURI, "/"); strings.HasPrefix(forwardedURI, "/api/v1/nodes/") && len(t) > 6 {
+			sessionKey = t[4]
+			if ip, ok := s.tunnel.getNodeIP(sessionKey); ok {
+				r.Request.Host = fmt.Sprintf("%s:%d", ip, constants.ServerPort)
+			}
+		}
+	}
 	session, ok := s.tunnel.getSession(sessionKey)
 	if !ok {
-		err = fmt.Errorf("Can not find %v session ", sessionKey)
+		err = fmt.Errorf("can not find %v session ", sessionKey)
 		return
 	}
 
@@ -167,18 +201,18 @@ func (s *StreamServer) getMetrics(r *restful.Request, w *restful.Response) {
 		session:      session,
 		ctx:          r.Request.Context(),
 		edgePeerStop: make(chan struct{}),
+		closeChan:    make(chan bool),
 	})
 	if err != nil {
-		klog.Errorf("Add apiserver connection into %s error %v", session.String(), err)
+		err = fmt.Errorf("add apiServer connection into %s error %v", session.String(), err)
 		return
 	}
 
 	defer func() {
 		session.DeleteAPIServerConnection(metricsConnection)
-		klog.Infof("Delete %s from %s", metricsConnection.String(), session.String())
 	}()
 
-	if err := metricsConnection.Serve(); err != nil {
+	if err = metricsConnection.Serve(); err != nil {
 		err = fmt.Errorf("apiconnection Serve %s in %s error %v",
 			metricsConnection.String(), session.String(), err)
 		return
@@ -187,23 +221,26 @@ func (s *StreamServer) getMetrics(r *restful.Request, w *restful.Response) {
 
 func (s *StreamServer) getExec(request *restful.Request, response *restful.Response) {
 	var err error
-
 	defer func() {
 		if err != nil {
 			response.WriteHeader(http.StatusInternalServerError)
-			klog.Errorf(err.Error())
+			klog.Errorf("Failed to get exec, err: %v", err)
 		}
 	}()
 
-	sessionKey := strings.Split(request.Request.Host, ":")[0]
+	sessionKey, err := s.getSessionKey(request.Request.URL.Path)
+	if err != nil {
+		err = fmt.Errorf("can not get session key: %v", err)
+		return
+	}
 	session, ok := s.tunnel.getSession(sessionKey)
 	if !ok {
-		err = fmt.Errorf("Exec: Can not find %v session ", sessionKey)
+		err = fmt.Errorf("exec: can not find %v session ", sessionKey)
 		return
 	}
 
 	if !httpstream.IsUpgradeRequest(request.Request) {
-		err = fmt.Errorf("Request was not an upgrade")
+		err = fmt.Errorf("request was not an upgrade")
 		return
 	}
 
@@ -215,6 +252,7 @@ func (s *StreamServer) getExec(request *restful.Request, response *restful.Respo
 		err = fmt.Errorf("request connection cannot be hijacked: %T", response.ResponseWriter)
 		return
 	}
+
 	requestHijackedConn, _, err := requestHijacker.Hijack()
 	if err != nil {
 		klog.V(6).Infof("Unable to hijack response: %v", err)
@@ -228,32 +266,127 @@ func (s *StreamServer) getExec(request *restful.Request, response *restful.Respo
 		Conn:         requestHijackedConn,
 		session:      session,
 		ctx:          request.Request.Context(),
-		edgePeerStop: make(chan struct{}),
+		edgePeerStop: make(chan struct{}, 2),
+		closeChan:    make(chan bool),
 	})
+
 	if err != nil {
-		klog.Errorf("Add apiserver exec connection into %s error %v", session.String(), err)
+		err = fmt.Errorf("add apiServer exec connection into %s error %v", session.String(), err)
 		return
 	}
 
 	defer func() {
-		session.DeleteAPIServerConnection(execConnection)
-		klog.Infof("Delete %s from %s", execConnection.String(), session.String())
+		if err != nil {
+			session.DeleteAPIServerConnection(execConnection)
+			klog.Infof("Delete %s from %s", execConnection.String(), session.String())
+		}
 	}()
 
-	if err := execConnection.Serve(); err != nil {
+	if err = execConnection.Serve(); err != nil {
 		err = fmt.Errorf("apiconnection Serve %s in %s error %v",
 			execConnection.String(), session.String(), err)
 		return
 	}
 }
 
+func (s *StreamServer) getAttach(request *restful.Request, response *restful.Response) {
+	var err error
+	defer func() {
+		if err != nil {
+			response.WriteHeader(http.StatusInternalServerError)
+			klog.Errorf("Failed to get attach, err: %v", err)
+		}
+	}()
+
+	sessionKey, err := s.getSessionKey(request.Request.URL.Path)
+	if err != nil {
+		err = fmt.Errorf("can not get session key: %v", err)
+		return
+	}
+	session, ok := s.tunnel.getSession(sessionKey)
+	if !ok {
+		err = fmt.Errorf("attach: can not find %v session ", sessionKey)
+		return
+	}
+
+	if !httpstream.IsUpgradeRequest(request.Request) {
+		err = fmt.Errorf("request was not an upgrade")
+		return
+	}
+
+	// Once the connection is hijacked, the ErrorResponder will no longer work, so
+	// hijacking should be the last step in the upgrade.
+	requestHijacker, ok := response.ResponseWriter.(http.Hijacker)
+	if !ok {
+		klog.V(6).Infof("Unable to hijack response writer: %T", response.ResponseWriter)
+		err = fmt.Errorf("request connection cannot be hijacked: %T", response.ResponseWriter)
+		return
+	}
+
+	requestHijackedConn, _, err := requestHijacker.Hijack()
+	if err != nil {
+		klog.V(6).Infof("Unable to hijack response: %v", err)
+		err = fmt.Errorf("error hijacking connection: %v", err)
+		return
+	}
+	defer requestHijackedConn.Close()
+
+	attachConnection, err := session.AddAPIServerConnection(s, &ContainerAttachConnection{
+		r:            request,
+		Conn:         requestHijackedConn,
+		session:      session,
+		ctx:          request.Request.Context(),
+		edgePeerStop: make(chan struct{}, 2),
+		closeChan:    make(chan bool),
+	})
+
+	if err != nil {
+		err = fmt.Errorf("add apiServer attach connection into %s error %v", session.String(), err)
+		return
+	}
+
+	defer func() {
+		if err != nil {
+			session.DeleteAPIServerConnection(attachConnection)
+			klog.Infof("Delete %s from %s", attachConnection.String(), session.String())
+		}
+	}()
+
+	if err = attachConnection.Serve(); err != nil {
+		err = fmt.Errorf("apiconnection Serve %s in %s error %v",
+			attachConnection.String(), session.String(), err)
+		return
+	}
+}
+
+func (s *StreamServer) getSessionKey(urlPath string) (string, error) {
+	// extract pod namespace and pod name from request
+	meta := strings.Split(urlPath, "/")
+	if len(meta) < 4 {
+		return "", fmt.Errorf("can not get pod name from url path: %s", urlPath)
+	}
+	namespaceName := meta[2]
+	podName := meta[3]
+
+	kubeClient := client.GetKubeClient()
+	if kubeClient == nil {
+		return "", fmt.Errorf("can not get kube client")
+	}
+
+	pod, err := kubeClient.CoreV1().Pods(namespaceName).Get(context.Background(), podName, v1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get pod %s/%s failed: %v", namespaceName, podName, err)
+	}
+	return pod.Spec.NodeName, nil
+}
+
 func (s *StreamServer) Start() {
 	s.installDebugHandler()
 
 	pool := x509.NewCertPool()
-	data, err := ioutil.ReadFile(config.Config.TLSStreamCAFile)
+	data, err := os.ReadFile(config.Config.TLSStreamCAFile)
 	if err != nil {
-		klog.Fatalf("Read tls stream ca file error %v", err)
+		klog.Exitf("Read tls stream ca file error %v", err)
 		return
 	}
 	pool.AppendCertsFromPEM(data)
@@ -265,12 +398,13 @@ func (s *StreamServer) Start() {
 			ClientCAs: pool,
 			// Populate PeerCertificates in requests, but don't reject connections without verified certificates
 			ClientAuth: tls.RequestClientCert,
+			MinVersion: tls.VersionTLS12,
 		},
 	}
 	klog.Infof("Prepare to start stream server ...")
 	err = streamServer.ListenAndServeTLS(config.Config.TLSStreamCertFile, config.Config.TLSStreamPrivateKeyFile)
 	if err != nil {
-		klog.Fatalf("Start stream server error %v\n", err)
+		klog.Exitf("Start stream server error %v\n", err)
 		return
 	}
 }

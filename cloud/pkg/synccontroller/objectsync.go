@@ -1,158 +1,94 @@
 package synccontroller
 
 import (
+	"context"
 	"strconv"
+	"strings"
 
-	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
+	"github.com/kubeedge/api/apis/reliablesyncs/v1alpha1"
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/kubeedge/cloud/pkg/apis/reliablesyncs/v1alpha1"
+	"github.com/kubeedge/kubeedge/cloud/pkg/common/messagelayer"
 	"github.com/kubeedge/kubeedge/cloud/pkg/common/modules"
 	edgectrconst "github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/constants"
-	edgectrmessagelayer "github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/messagelayer"
 	commonconst "github.com/kubeedge/kubeedge/common/constants"
+	"github.com/kubeedge/kubeedge/pkg/metaserver/util"
 )
 
-func (sctl *SyncController) managePod(sync *v1alpha1.ObjectSync) {
-	pod, err := sctl.podLister.Pods(sync.Namespace).Get(sync.Spec.ObjectName)
+func (sctl *SyncController) reconcileObjectSync(sync *v1alpha1.ObjectSync) {
+	var object metav1.Object
 
-	nodeName := getNodeName(sync.Name)
-
+	gv, err := schema.ParseGroupVersion(sync.Spec.ObjectAPIVersion)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			pod = &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      sync.Spec.ObjectName,
-					Namespace: sync.Namespace,
-					UID:       types.UID(getObjectUID(sync.Name)),
-				},
-			}
-		} else {
-			klog.Errorf("Failed to manage pod sync of %s in namespace %s: %v", sync.Name, sync.Namespace, err)
-			return
-		}
+		return
 	}
-	sendEvents(err, nodeName, sync, model.ResourceTypePod, pod.ResourceVersion, pod)
-}
-
-func (sctl *SyncController) manageConfigMap(sync *v1alpha1.ObjectSync) {
-	configmap, err := sctl.configMapLister.ConfigMaps(sync.Namespace).Get(sync.Spec.ObjectName)
-
+	resource := util.UnsafeKindToResource(sync.Spec.ObjectKind)
+	gvr := gv.WithResource(resource)
 	nodeName := getNodeName(sync.Name)
+	resourceType := strings.ToLower(sync.Spec.ObjectKind)
 
+	lister, err := sctl.informerManager.GetLister(gvr)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			configmap = &v1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      sync.Spec.ObjectName,
-					Namespace: sync.Namespace,
-					UID:       types.UID(getObjectUID(sync.Name)),
-				},
-			}
-		} else {
-			klog.Errorf("Failed to manage configMap sync of %s in namespace %s: %v", sync.Name, sync.Namespace, err)
-			return
-		}
-	}
-	sendEvents(err, nodeName, sync, model.ResourceTypeConfigmap, configmap.ResourceVersion, configmap)
-}
-
-func (sctl *SyncController) manageSecret(sync *v1alpha1.ObjectSync) {
-	secret, err := sctl.secretLister.Secrets(sync.Namespace).Get(sync.Spec.ObjectName)
-
-	nodeName := getNodeName(sync.Name)
-
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			secret = &v1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      sync.Spec.ObjectName,
-					Namespace: sync.Namespace,
-					UID:       types.UID(getObjectUID(sync.Name)),
-				},
-			}
-		} else {
-			klog.Errorf("Failed to manage secret sync of %s in namespace %s: %v", sync.Name, sync.Namespace, err)
-			return
-		}
-	}
-	sendEvents(err, nodeName, sync, model.ResourceTypeSecret, secret.ResourceVersion, secret)
-}
-
-func (sctl *SyncController) manageService(sync *v1alpha1.ObjectSync) {
-	service, err := sctl.serviceLister.Services(sync.Namespace).Get(sync.Spec.ObjectName)
-
-	nodeName := getNodeName(sync.Name)
-
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			service = &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      sync.Spec.ObjectName,
-					Namespace: sync.Namespace,
-					UID:       types.UID(getObjectUID(sync.Name)),
-				},
-			}
-		} else {
-			klog.Errorf("Failed to manage service sync of %s in namespace %s: %v", sync.Name, sync.Namespace, err)
-			return
-		}
-	}
-	sendEvents(err, nodeName, sync, commonconst.ResourceTypeService, service.ResourceVersion, service)
-}
-
-func (sctl *SyncController) manageEndpoint(sync *v1alpha1.ObjectSync) {
-	endpoint, err := sctl.endpointLister.Endpoints(sync.Namespace).Get(sync.Spec.ObjectName)
-
-	nodeName := getNodeName(sync.Name)
-
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			endpoint = &v1.Endpoints{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      sync.Spec.ObjectName,
-					Namespace: sync.Namespace,
-					UID:       types.UID(getObjectUID(sync.Name)),
-				},
-			}
-		} else {
-			klog.Errorf("Failed to manage endpoint sync of %s in namespace %s: %v", sync.Name, sync.Namespace, err)
-			return
-		}
-	}
-	sendEvents(err, nodeName, sync, commonconst.ResourceTypeEndpoints, endpoint.ResourceVersion, endpoint)
-}
-
-// todo: add events for devices
-func (sctl *SyncController) manageDevice(sync *v1alpha1.ObjectSync) {
-	//pod, err := sctl.deviceLister.Devices(sync.Namespace).Get(sync.Spec.ObjectName)
-
-	//
-	//if err != nil && apierrors.IsNotFound(err) {
-	//trigger the delete event
-	//}
-
-	//if pod.ResourceVersion > sync.Status.ObjectResourceVersion {
-	// trigger the update event
-	//}
-}
-
-func sendEvents(err error, nodeName string, sync *v1alpha1.ObjectSync, resourceType string,
-	objectResourceVersion string, obj interface{}) {
-	if err != nil && apierrors.IsNotFound(err) {
-		//trigger the delete event
-		klog.Infof("%s: %s has been deleted in K8s, send the delete event to edge", resourceType, sync.Spec.ObjectName)
-		msg := buildEdgeControllerMessage(nodeName, sync.Namespace, resourceType, sync.Spec.ObjectName, model.DeleteOperation, obj)
-		beehiveContext.Send(commonconst.DefaultContextSendModuleName, *msg)
 		return
 	}
 
+	ret, err := lister.ByNamespace(sync.Namespace).Get(sync.Spec.ObjectName)
+
+	if apierrors.IsNotFound(err) {
+		sctl.gcOrphanedObjectSync(sync)
+		return
+	} else if err != nil || ret == nil {
+		klog.Errorf("failed to get obj(gvr:%v,namespace:%v,name:%v), %v", gvr, sync.Namespace, sync.Spec.ObjectName, err)
+		return
+	}
+
+	object, err = meta.Accessor(ret)
+	if err != nil {
+		return
+	}
+
+	syncObjUID := getObjectUID(sync.Name)
+	if syncObjUID != string(object.GetUID()) {
+		sctl.gcOrphanedObjectSync(sync)
+		return
+	}
+
+	sendEvents(nodeName, sync, resourceType, object.GetResourceVersion(), object)
+}
+
+// gcOrphanedObjectSync try to send delete message to the edge node
+// to make sure that the resource is deleted in the edge node. After the
+// message ACK is received by `cloudHub`, the objectSync will be deleted
+// directly in the `cloudHub`. But if message build failed, the objectSync
+// will be deleted directly in the `syncController`.
+func (sctl *SyncController) gcOrphanedObjectSync(sync *v1alpha1.ObjectSync) {
+	resourceType := strings.ToLower(sync.Spec.ObjectKind)
+	nodeName := getNodeName(sync.Name)
+	klog.V(4).Infof("%s: %s has been deleted in K8s, send the delete event to edge in sync loop", resourceType, sync.Spec.ObjectName)
+
+	object := &unstructured.Unstructured{}
+	object.SetNamespace(sync.Namespace)
+	object.SetName(sync.Spec.ObjectName)
+	object.SetUID(types.UID(getObjectUID(sync.Name)))
+	if msg := buildEdgeControllerMessage(nodeName, sync.Namespace, resourceType, sync.Spec.ObjectName, model.DeleteOperation, object); msg != nil {
+		beehiveContext.Send(commonconst.DefaultContextSendModuleName, *msg)
+	} else {
+		if err := sctl.crdclient.ReliablesyncsV1alpha1().ObjectSyncs(sync.Namespace).Delete(context.Background(), sync.Name, *metav1.NewDeleteOptions(0)); err != nil {
+			klog.Errorf("Failed to delete objectsync %s: %v", sync.Name, err)
+		}
+	}
+}
+
+func sendEvents(nodeName string, sync *v1alpha1.ObjectSync, resourceType string,
+	objectResourceVersion string, obj interface{}) {
 	if sync.Status.ObjectResourceVersion == "" {
 		klog.Errorf("The ObjectResourceVersion is empty in status of objectsync: %s", sync.Name)
 		return
@@ -167,22 +103,23 @@ func sendEvents(err error, nodeName string, sync *v1alpha1.ObjectSync, resourceT
 }
 
 func buildEdgeControllerMessage(nodeName, namespace, resourceType, resourceName, operationType string, obj interface{}) *model.Message {
-	msg := model.NewMessage("")
-	resource, err := edgectrmessagelayer.BuildResource(nodeName, namespace, resourceType, resourceName)
+	resource, err := messagelayer.BuildResource(nodeName, namespace, resourceType, resourceName)
 	if err != nil {
 		klog.Warningf("build message resource failed with error: %s", err)
 		return nil
 	}
-	msg.BuildRouter(modules.EdgeControllerModuleName, edgectrconst.GroupResource, resource, operationType)
-	msg.Content = obj
 
 	resourceVersion := GetObjectResourceVersion(obj)
-	msg.SetResourceVersion(resourceVersion)
+
+	msg := model.NewMessage("").
+		BuildRouter(modules.EdgeControllerModuleName, edgectrconst.GroupResource, resource, operationType).
+		FillBody(obj).
+		SetResourceVersion(resourceVersion)
 
 	return msg
 }
 
-// GetMessageUID returns the resourceVersion of the object in message
+// GetObjectResourceVersion returns the resourceVersion of the object in message
 func GetObjectResourceVersion(obj interface{}) string {
 	if obj == nil {
 		klog.Error("object is nil")

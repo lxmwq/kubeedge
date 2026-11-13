@@ -3,20 +3,20 @@ package config
 import (
 	"sync"
 
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
 )
 
-var Config Configure
+var config Configure
 var once sync.Once
 
 type Configure struct {
-	v1alpha1.DeviceTwin
+	v1alpha2.DeviceTwin
 	NodeName string
 }
 
-func InitConfigure(deviceTwin *v1alpha1.DeviceTwin, nodeName string) {
+func InitConfigure(deviceTwin *v1alpha2.DeviceTwin, nodeName string) {
 	once.Do(func() {
-		Config = Configure{
+		config = Configure{
 			DeviceTwin: *deviceTwin,
 			NodeName:   nodeName,
 		}
@@ -24,5 +24,5 @@ func InitConfigure(deviceTwin *v1alpha1.DeviceTwin, nodeName string) {
 }
 
 func Get() *Configure {
-	return &Config
+	return &config
 }

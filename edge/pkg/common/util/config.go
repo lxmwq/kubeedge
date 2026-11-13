@@ -25,10 +25,13 @@ import (
 	"math/big"
 	"os"
 	"time"
+
+	certutil "k8s.io/client-go/util/cert"
+	klog "k8s.io/klog/v2"
 )
 
-//GenerateTestCertificate generates fake certificates and stores them at the path specified.
-//It accepts 3 arguments path, certFileName and keyFileName
+// GenerateTestCertificate generates fake certificates and stores them at the path specified.
+// It accepts 3 arguments path, certFileName and keyFileName
 // "path" is the directory path at which the directory is to be created,
 // "certFileName" & "keyFileName" refers to the name of the file to be created without the extension
 func GenerateTestCertificate(path string, certFileName string, keyFileName string) error {
@@ -39,8 +42,9 @@ func GenerateTestCertificate(path string, certFileName string, keyFileName strin
 		SerialNumber:          big.NewInt(1234),
 		Subject: pkix.Name{
 			Country:      []string{"test"},
-			Organization: []string{"testor"},
+			Organization: []string{"tester"},
 		},
+		DNSNames:    []string{"localhost"},
 		NotBefore:   time.Now(),
 		NotAfter:    time.Now().AddDate(5, 5, 5),
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
@@ -64,7 +68,7 @@ func GenerateTestCertificate(path string, certFileName string, keyFileName strin
 	}
 	pKey := x509.MarshalPKCS1PrivateKey(privateKey)
 	certFilePEM := pem.Block{
-		Type:  "CERTIFICATE",
+		Type:  certutil.CertificateBlockType,
 		Bytes: cert}
 	err = createPEMfile(path+certFileName+".crt", certFilePEM)
 	if err != nil {
@@ -72,15 +76,13 @@ func GenerateTestCertificate(path string, certFileName string, keyFileName strin
 	}
 	keyFilePEM := pem.Block{
 		Type:  "RSA PRIVATE KEY",
-		Bytes: pKey}
-	err = createPEMfile(path+keyFileName+".key", keyFilePEM)
-	if err != nil {
-		return err
+		Bytes: pKey,
 	}
-	return nil
+
+	return createPEMfile(path+keyFileName+".key", keyFilePEM)
 }
 
-//createPEMfile() creates an encoded file at the path given, with PEM Block specified
+// createPEMfile creates an encoded file at the path given, with PEM Block specified
 func createPEMfile(path string, pemBlock pem.Block) error {
 	// this will create plain text PEM file.
 	file, err := os.Create(path)
@@ -88,7 +90,12 @@ func createPEMfile(path string, pemBlock pem.Block) error {
 		return err
 	}
 
-	defer file.Close()
-	err = pem.Encode(file, &pemBlock)
-	return err
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			klog.Errorf("failed to close file, path: %v, error: %v", path, err)
+		}
+	}()
+
+	return pem.Encode(file, &pemBlock)
 }

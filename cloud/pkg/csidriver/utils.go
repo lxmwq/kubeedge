@@ -29,7 +29,7 @@ import (
 	"github.com/kubernetes-csi/csi-lib-utils/protosanitizer"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
 	"github.com/kubeedge/kubeedge/common/constants"
@@ -79,7 +79,7 @@ func (s *nonBlockingGRPCServer) ForceStop() {
 func (s *nonBlockingGRPCServer) serve(endpoint string, ids csi.IdentityServer, cs csi.ControllerServer, ns csi.NodeServer) error {
 	proto, addr, err := parseEndpoint(endpoint)
 	if err != nil {
-		klog.Errorf(err.Error())
+		klog.Error(err.Error())
 		return err
 	}
 
@@ -167,16 +167,17 @@ func sendToKubeEdge(context, kubeEdgeEndpoint string) (string, error) {
 
 // extractMessage extracts message
 func extractMessage(context string) (*model.Message, error) {
-	var msg *model.Message
-	if context != "" {
-		err := json.Unmarshal([]byte(context), &msg)
-		if err != nil {
-			return nil, err
-		}
-	} else {
+	var msg model.Message
+	if context == "" {
 		err := errors.New("failed to extract message with empty context")
 		klog.Errorf("%v", err)
 		return nil, err
 	}
-	return msg, nil
+
+	err := json.Unmarshal([]byte(context), &msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &msg, nil
 }

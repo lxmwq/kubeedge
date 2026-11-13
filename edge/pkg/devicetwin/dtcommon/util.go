@@ -1,54 +1,261 @@
 package dtcommon
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	"k8s.io/klog/v2"
+
+	"github.com/kubeedge/api/apis/devices/v1beta1"
+	pb "github.com/kubeedge/api/apis/dmi/v1beta1"
+	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/constants"
 )
 
-//ValidateValue validate value type
+// ValidateValue validate value type
 func ValidateValue(valueType string, value string) error {
 	switch valueType {
 	case "":
-		valueType = "string"
+		valueType = constants.DataTypeString
 		return nil
-	case "string":
+	case constants.DataTypeString:
 		return nil
-	case "int":
+	case constants.DataTypeInt, constants.DataTypeInteger:
 		_, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			return errors.New("the value is not int")
+			return errors.New("the value is not int or integer")
 		}
 		return nil
-	case "float":
+	case constants.DataTypeFloat:
 		_, err := strconv.ParseFloat(value, 64)
 		if err != nil {
 			return errors.New("the value is not float")
 		}
 		return nil
-	case "boolean":
+	case constants.DataTypeBoolean:
 		if strings.Compare(value, "true") != 0 && strings.Compare(value, "false") != 0 {
 			return errors.New("the bool value must be true or false")
 		}
 		return nil
-	case "deleted":
+	case TypeDeleted:
 		return nil
 	default:
 		return errors.New("the value type is not allowed")
 	}
 }
 
-//ValidateTwinKey validate twin key
+// ValidateTwinKey validate twin key
 func ValidateTwinKey(key string) bool {
 	pattern := "^[a-zA-Z0-9-_.,:/@#]{1,128}$"
 	match, _ := regexp.MatchString(pattern, key)
 	return match
 }
 
-//ValidateTwinValue validate twin value
+// ValidateTwinValue validate twin value
 func ValidateTwinValue(value string) bool {
 	pattern := "^[a-zA-Z0-9-_.,:/@#]{1,512}$"
 	match, _ := regexp.MatchString(pattern, value)
 	return match
+}
+
+func ConvertDevice(device *v1beta1.Device) (*pb.Device, error) {
+	if device == nil {
+		return nil, errors.New("device cannot be nil")
+	}
+
+	data, err := json.Marshal(device)
+	if err != nil {
+		klog.Errorf("fail to marshal device %s with err: %v", device.Name, err)
+		return nil, err
+	}
+	var edgeDevice pb.Device
+	err = json.Unmarshal(data, &edgeDevice)
+	if err != nil {
+		klog.Errorf("fail to unmarshal device %s with err: %v", device.Name, err)
+		return nil, err
+	}
+	if device.Spec.Protocol.ConfigData != nil && device.Spec.Protocol.ConfigData.Data != nil {
+		configAnyData := make(map[string]*anypb.Any)
+		for k, v := range device.Spec.Protocol.ConfigData.Data {
+			anyValue, err := dataToAny(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert protocol config data: %w", err)
+			}
+			configAnyData[k] = anyValue
+		}
+		edgeDevice.Spec.Protocol.ConfigData.Data = configAnyData
+	}
+
+	var edgePropertyVisitors []*pb.DeviceProperty
+	for i := range device.Spec.Properties {
+		property, err := convertDeviceProperty(&device.Spec.Properties[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert property: %w", err)
+		}
+		edgePropertyVisitors = append(edgePropertyVisitors, property)
+	}
+
+	edgeDevice.Spec.Properties = edgePropertyVisitors
+	edgeDevice.Name = device.Name
+	if device.Spec.DeviceModelRef != nil {
+		edgeDevice.Spec.DeviceModelReference = device.Spec.DeviceModelRef.Name
+	}
+	edgeDevice.Namespace = device.Namespace
+
+	// state's ReportCycle and ReportToCloud used to be in device status, since we have split device crd and device status crd, these two fields are moved to device spec.
+	// in order to perseve backward compatibility, if spec.state has value, we use value in spec.state as state's ReportCycle and ReportToCloud.
+	// if spec.state is nil, the old logic is preserved, we use ReportCycle and ReportToCloud in device status.
+	if device.Spec.StateReport != nil {
+		if edgeDevice.Status == nil {
+			edgeDevice.Status = &pb.DeviceStatus{}
+		}
+		edgeDevice.Status.ReportCycle = device.Spec.StateReport.ReportCycle
+		edgeDevice.Status.ReportToCloud = device.Spec.StateReport.ReportToCloud
+	}
+	return &edgeDevice, nil
+}
+func convertDeviceProperty(prop *v1beta1.DeviceProperty) (*pb.DeviceProperty, error) {
+	if prop == nil {
+		return nil, errors.New("property cannot be nil")
+	}
+
+	item := new(pb.DeviceProperty)
+	propertyData, err := json.Marshal(prop)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal property: %w", err)
+	}
+
+	err = json.Unmarshal(propertyData, item)
+
+	if prop.Visitors.ConfigData != nil && prop.Visitors.ConfigData.Data != nil {
+		configAnyData := make(map[string]*anypb.Any)
+		for k, v := range prop.Visitors.ConfigData.Data {
+			anyValue, err := dataToAny(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert visitor config data: %w", err)
+			}
+			configAnyData[k] = anyValue
+		}
+		item.Visitors.ConfigData.Data = configAnyData
+	}
+
+	if prop.PushMethod != nil && prop.PushMethod.AnomalyDetection != nil && prop.PushMethod.AnomalyDetection.Data != nil {
+		anomalyDetectionAnyData := make(map[string]*anypb.Any)
+		for k, v := range prop.PushMethod.AnomalyDetection.Data {
+			anyValue, err := dataToAny(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert anomaly detection data: %v", err)
+			}
+			anomalyDetectionAnyData[k] = anyValue
+		}
+		if item.PushMethod == nil {
+			item.PushMethod = &pb.PushMethod{}
+		}
+		if item.PushMethod.AnomalyDetection == nil {
+			item.PushMethod.AnomalyDetection = &pb.AnomalyDetection{}
+		}
+		item.PushMethod.AnomalyDetection.Data = anomalyDetectionAnyData
+	}
+
+	return item, nil
+}
+func ConvertDeviceModel(model *v1beta1.DeviceModel) (*pb.DeviceModel, error) {
+	data, err := json.Marshal(model)
+	if err != nil {
+		klog.Errorf("fail to marshal device model %s with err: %v", model.Name, err)
+		return nil, err
+	}
+	var edgeDeviceModel pb.DeviceModel
+	err = json.Unmarshal(data, &edgeDeviceModel)
+	if err != nil {
+		klog.Errorf("fail to unmarshal device model %s with err: %v", model.Name, err)
+		return nil, err
+	}
+	edgeDeviceModel.Name = model.Name
+	edgeDeviceModel.Namespace = model.Namespace
+	return &edgeDeviceModel, nil
+}
+func dataToAny(v interface{}) (*anypb.Any, error) {
+	switch m := v.(type) {
+	case string:
+		strWrapper := wrapperspb.String(m)
+		anyStr, err := anypb.New(strWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyStr, nil
+	case int8:
+		intWrapper := wrapperspb.Int32(int32(m))
+		anyInt, err := anypb.New(intWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyInt, nil
+	case int16:
+		intWrapper := wrapperspb.Int32(int32(m))
+		anyInt, err := anypb.New(intWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyInt, nil
+	case int32:
+		intWrapper := wrapperspb.Int32(m)
+		anyInt, err := anypb.New(intWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyInt, nil
+	case int64:
+		intWrapper := wrapperspb.Int64(m)
+		anyInt, err := anypb.New(intWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyInt, nil
+	case int:
+		intWrapper := wrapperspb.Int32(int32(m))
+		anyInt, err := anypb.New(intWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyInt, nil
+	case float64:
+		floatWrapper := wrapperspb.Float(float32(m))
+		anyFloat, err := anypb.New(floatWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyFloat, nil
+	case float32:
+		floatWrapper := wrapperspb.Float(float32(m))
+		anyFloat, err := anypb.New(floatWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyFloat, nil
+	case bool:
+		boolWrapper := wrapperspb.Bool(m)
+		anyBool, err := anypb.New(boolWrapper)
+		if err != nil {
+			klog.Errorf("anypb new error: %v", err)
+			return nil, err
+		}
+		return anyBool, nil
+	default:
+		return nil, fmt.Errorf("%v does not support converting to any", reflect.TypeOf(v))
+	}
 }

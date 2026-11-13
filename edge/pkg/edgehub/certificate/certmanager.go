@@ -2,28 +2,28 @@ package certificate
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
-	"strings"
+	"io"
+	nethttp "net/http"
+	"os"
 	"time"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/client-go/util/cert"
+	certutil "k8s.io/client-go/util/cert"
+	"k8s.io/client-go/util/keyutil"
+	"k8s.io/klog/v2"
 
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
 	"github.com/kubeedge/kubeedge/common/constants"
-	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/common/certutil"
-	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/common/http"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
+	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/certificate/http"
+	"github.com/kubeedge/kubeedge/pkg/security/certs"
+	"github.com/kubeedge/kubeedge/pkg/security/token"
 )
 
 // jitteryDuration uses some jitter to set the rotation threshold so each node
@@ -38,10 +38,11 @@ var jitteryDuration = func(totalDuration float64) time.Duration {
 	return wait.Jitter(time.Duration(totalDuration), 0.2) - time.Duration(totalDuration*0.3)
 }
 
+var CleanupTokenChan = make(chan struct{}, 1)
+
 type CertManager struct {
 	RotateCertificates bool
 	NodeName           string
-	CR                 *x509.CertificateRequest
 
 	caFile   string
 	certFile string
@@ -57,21 +58,11 @@ type CertManager struct {
 }
 
 // NewCertManager creates a CertManager for edge certificate management according to EdgeHub config
-func NewCertManager(edgehub v1alpha1.EdgeHub, nodename string) CertManager {
-	certReq := &x509.CertificateRequest{
-		Subject: pkix.Name{
-			Country:      []string{"CN"},
-			Organization: []string{"kubeEdge"},
-			Locality:     []string{"Hangzhou"},
-			Province:     []string{"Zhejiang"},
-			CommonName:   "kubeedge.io",
-		},
-	}
+func NewCertManager(edgehub v1alpha2.EdgeHub, nodename string) CertManager {
 	return CertManager{
 		RotateCertificates: edgehub.RotateCertificates,
 		NodeName:           nodename,
 		token:              edgehub.Token,
-		CR:                 certReq,
 		caFile:             edgehub.TLSCAFile,
 		certFile:           edgehub.TLSCertFile,
 		keyFile:            edgehub.TLSPrivateKeyFile,
@@ -84,12 +75,14 @@ func NewCertManager(edgehub v1alpha1.EdgeHub, nodename string) CertManager {
 
 // Start starts the CertManager
 func (cm *CertManager) Start() {
-	_, err := cm.getCurrent()
-	if err != nil {
-		err = cm.applyCerts()
-		if err != nil {
-			klog.Fatalf("Error: %v", err)
+	if _, err := cm.getCurrent(); err != nil {
+		klog.Warningf("unable to get the current edge certs, reason: %v", err)
+		klog.Info("Reuse the token to obtain the certificate")
+		if err = cm.applyCerts(); err != nil {
+			panic(fmt.Errorf("failed to apply the edge certs, err: %v", err))
 		}
+		// inform to cleanup token in configuration edgecore.yaml
+		CleanupTokenChan <- struct{}{}
 	}
 	if cm.RotateCertificates {
 		cm.rotate()
@@ -100,11 +93,14 @@ func (cm *CertManager) Start() {
 func (cm *CertManager) getCurrent() (*tls.Certificate, error) {
 	cert, err := tls.LoadX509KeyPair(cm.certFile, cm.keyFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to load cert/key pair: %v", err)
 	}
 	certs, err := x509.ParseCertificates(cert.Certificate[0])
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse certificate data: %v", err)
+	}
+	if cn := certs[0].Subject.CommonName; cn != fmt.Sprintf("system:node:%s", cm.NodeName) {
+		return nil, fmt.Errorf("certificate CN %s does not match node name %s", cn, cm.NodeName)
 	}
 	cert.Leaf = certs[0]
 	return &cert, nil
@@ -118,38 +114,29 @@ func (cm *CertManager) applyCerts() error {
 	}
 
 	// validate the CA certificate by hashcode
-	tokenParts := strings.Split(cm.token, ".")
-	if len(tokenParts) != 4 {
-		return fmt.Errorf("token credentials are in the wrong format")
-	}
-	ok, hash, newHash := ValidateCACerts(cacert, tokenParts[0])
-	if !ok {
-		return fmt.Errorf("failed to validate CA certificate. tokenCAhash: %s, CAhash: %s", hash, newHash)
+	realToken, err := token.VerifyCAAndGetRealToken(cm.token, cacert)
+	if err != nil {
+		return err
 	}
 
 	// save the ca.crt to file
-	ca, err := x509.ParseCertificate(cacert)
+	caPem, err := certs.WriteDERToPEMFile(cm.caFile, cert.CertificateBlockType, cacert)
 	if err != nil {
-		return fmt.Errorf("failed to parse the CA certificate, error: %v", err)
-	}
-
-	if err = certutil.WriteCert(cm.caFile, ca); err != nil {
 		return fmt.Errorf("failed to save the CA certificate to file: %s, error: %v", cm.caFile, err)
 	}
-
-	// get the edge.crt
-	caPem := pem.EncodeToMemory(&pem.Block{Bytes: cacert, Type: "CERTIFICATE"})
-	pk, edgeCert, err := cm.GetEdgeCert(cm.certURL, caPem, tls.Certificate{}, strings.Join(tokenParts[1:], "."))
+	certDER, keyDER, err := cm.GetEdgeCert(cm.certURL, pem.EncodeToMemory(caPem), tls.Certificate{}, realToken)
 	if err != nil {
 		return fmt.Errorf("failed to get edge certificate from the cloudcore, error: %v", err)
 	}
-
 	// save the edge.crt to the file
-	cert, _ := x509.ParseCertificate(edgeCert)
-	if err = certutil.WriteKeyAndCert(cm.keyFile, cm.certFile, pk, cert); err != nil {
-		return fmt.Errorf("failed to save the edge key and certificate to file: %s, error: %v", cm.certFile, err)
+	if _, err := certs.WriteDERToPEMFile(cm.certFile,
+		certutil.CertificateBlockType, certDER); err != nil {
+		return fmt.Errorf("failed to save the certificate file %s, err: %v", cm.certFile, err)
 	}
-
+	if _, err := certs.WriteDERToPEMFile(cm.keyFile,
+		keyutil.ECPrivateKeyBlockType, keyDER); err != nil {
+		return fmt.Errorf("failed to save the certificate key file %s, err: %v", cm.keyFile, err)
+	}
 	return nil
 }
 
@@ -178,7 +165,10 @@ func (cm *CertManager) rotate() {
 		}
 		if err := wait.ExponentialBackoff(backoff, cm.rotateCert); err != nil {
 			utilruntime.HandleError(fmt.Errorf("reached backoff limit, still unable to rotate certs: %v", err))
-			wait.PollInfinite(32*time.Second, cm.rotateCert)
+			if err := wait.PollInfinite(32*time.Second, cm.rotateCert); err != nil {
+				// TODO: handle error
+				klog.Error(err)
+			}
 		}
 	}, time.Second)
 }
@@ -187,7 +177,7 @@ func (cm *CertManager) rotate() {
 func (cm *CertManager) nextRotationDeadline() (time.Time, error) {
 	cert, err := cm.getCurrent()
 	if err != nil {
-		return time.Time{}, fmt.Errorf("faild to get current certificate")
+		return time.Time{}, fmt.Errorf("failed to get current certificate")
 	}
 	notAfter := cert.Leaf.NotAfter
 	totalDuration := float64(notAfter.Sub(cert.Leaf.NotBefore))
@@ -211,19 +201,19 @@ func (cm *CertManager) rotateCert() (bool, error) {
 		klog.Errorf("failed to get CA certificate locally:%v", err)
 		return false, nil
 	}
-	pk, edgecert, err := cm.GetEdgeCert(cm.certURL, caPem, *tlsCert, "")
+	certDER, keyDER, err := cm.GetEdgeCert(cm.certURL, caPem, *tlsCert, "")
 	if err != nil {
 		klog.Errorf("failed to get edge certificate from CloudCore:%v", err)
 		return false, nil
 	}
-	// save the edge.crt to the file
-	cert, err := x509.ParseCertificate(edgecert)
-	if err != nil {
-		klog.Errorf("failed to parse edge certificate:%v", err)
+	if _, err := certs.WriteDERToPEMFile(cm.certFile,
+		certutil.CertificateBlockType, certDER); err != nil {
+		klog.Errorf("failed to save the certificate file %s, err: %v", cm.certFile, err)
 		return false, nil
 	}
-	if err = certutil.WriteKeyAndCert(cm.keyFile, cm.certFile, pk, cert); err != nil {
-		klog.Errorf("failed to save edge key and certificate:%v", err)
+	if _, err := certs.WriteDERToPEMFile(cm.keyFile,
+		keyutil.ECPrivateKeyBlockType, keyDER); err != nil {
+		klog.Errorf("failed to save the certificate key file %s, err: %v", cm.keyFile, err)
 		return false, nil
 	}
 
@@ -236,13 +226,13 @@ func (cm *CertManager) rotateCert() (bool, error) {
 
 // getCA returns the CA in pem format.
 func (cm *CertManager) getCA() ([]byte, error) {
-	return ioutil.ReadFile(cm.caFile)
+	return os.ReadFile(cm.caFile)
 }
 
 // GetCACert gets the cloudcore CA certificate
 func GetCACert(url string) ([]byte, error) {
 	client := http.NewHTTPClient()
-	req, err := http.BuildRequest("GET", url, nil, "", "")
+	req, err := http.BuildRequest(nethttp.MethodGet, url, nil, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -251,8 +241,7 @@ func GetCACert(url string) ([]byte, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
-
-	caCert, err := ioutil.ReadAll(res.Body)
+	caCert, err := io.ReadAll(io.LimitReader(res.Body, constants.MaxRespBodyLength))
 	if err != nil {
 		return nil, err
 	}
@@ -261,63 +250,46 @@ func GetCACert(url string) ([]byte, error) {
 }
 
 // GetEdgeCert applies for the certificate from cloudcore
-func (cm *CertManager) GetEdgeCert(url string, capem []byte, cert tls.Certificate, token string) (*ecdsa.PrivateKey, []byte, error) {
-	pk, csr, err := cm.getCSR()
+func (cm *CertManager) GetEdgeCert(url string, capem []byte, tlscert tls.Certificate, token string,
+) ([]byte, []byte, error) {
+	h := certs.GetHandler(certs.HandlerTypeX509)
+	pkw, err := h.GenPrivateKey()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create CSR: %v", err)
+		return nil, nil, fmt.Errorf("failed to generate a private key of edge cert, err: %v", err)
+	}
+	csrPem, err := h.CreateCSR(pkix.Name{
+		Country:      []string{"CN"},
+		Organization: []string{"system:nodes"},
+		Locality:     []string{"Hangzhou"},
+		Province:     []string{"Zhejiang"},
+		CommonName:   fmt.Sprintf("system:node:%s", cm.NodeName),
+	}, pkw, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create a csr of edge cert, err %v", err)
 	}
 
-	client, err := http.NewHTTPclientWithCA(capem, cert)
+	client, err := http.NewHTTPClientWithCA(capem, tlscert)
 	if err != nil {
-		return nil, nil, fmt.Errorf("falied to create http client:%v", err)
+		return nil, nil, fmt.Errorf("failed to create a http client, err: %v", err)
 	}
 
-	req, err := http.BuildRequest("GET", url, bytes.NewReader(csr), token, cm.NodeName)
+	req, err := http.BuildRequest(nethttp.MethodGet, url, bytes.NewReader(csrPem.Bytes), token, cm.NodeName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate http request:%v", err)
+		return nil, nil, fmt.Errorf("failed to generate a http request, err: %v", err)
 	}
 
 	res, err := http.SendRequest(req, client)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to request the cloudcore server, err: %v", err)
 	}
 	defer res.Body.Close()
 
-	content, err := ioutil.ReadAll(res.Body)
+	content, err := io.ReadAll(io.LimitReader(res.Body, constants.MaxRespBodyLength))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to read response body, err: %v", err)
 	}
-	if res.StatusCode != 200 {
-		return nil, nil, fmt.Errorf(string(content))
+	if res.StatusCode != nethttp.StatusOK {
+		return nil, nil, fmt.Errorf("failed to call http, code: %d, message: %s", res.StatusCode, string(content))
 	}
-
-	return pk, content, nil
-}
-
-func (cm *CertManager) getCSR() (*ecdsa.PrivateKey, []byte, error) {
-	pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader, cm.CR, pk)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return pk, csr, nil
-}
-
-// ValidateCACerts validates the CA certificate by hash code
-func ValidateCACerts(cacerts []byte, hash string) (bool, string, string) {
-	if len(cacerts) == 0 && hash == "" {
-		return true, "", ""
-	}
-
-	newHash := hashCA(cacerts)
-	return hash == newHash, hash, newHash
-}
-
-func hashCA(cacerts []byte) string {
-	digest := sha256.Sum256(cacerts)
-	return hex.EncodeToString(digest[:])
+	return content, pkw.DER(), nil
 }

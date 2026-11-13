@@ -4,33 +4,38 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
-	"github.com/kubeedge/kubeedge/edge/pkg/edgestream"
-
-	"github.com/mitchellh/go-ps"
+	ps "github.com/shirou/gopsutil/v3/process"
 	"github.com/spf13/cobra"
+	netutil "k8s.io/apimachinery/pkg/util/net"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
 	"k8s.io/component-base/term"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/yaml"
 
+	"github.com/kubeedge/api/apis/common/constants"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2/validation"
 	"github.com/kubeedge/beehive/pkg/core"
 	"github.com/kubeedge/kubeedge/edge/cmd/edgecore/app/options"
-	"github.com/kubeedge/kubeedge/edge/pkg/common/dbm"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin"
 	"github.com/kubeedge/kubeedge/edge/pkg/edged"
 	"github.com/kubeedge/kubeedge/edge/pkg/edgehub"
+	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/certificate"
+	"github.com/kubeedge/kubeedge/edge/pkg/edgestream"
 	"github.com/kubeedge/kubeedge/edge/pkg/eventbus"
 	"github.com/kubeedge/kubeedge/edge/pkg/metamanager"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao"
 	"github.com/kubeedge/kubeedge/edge/pkg/servicebus"
+	"github.com/kubeedge/kubeedge/edge/pkg/taskmanager"
 	"github.com/kubeedge/kubeedge/edge/test"
-	edgemesh "github.com/kubeedge/kubeedge/edgemesh/pkg"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1/validation"
+	"github.com/kubeedge/kubeedge/pkg/features"
 	"github.com/kubeedge/kubeedge/pkg/util"
 	"github.com/kubeedge/kubeedge/pkg/util/flag"
+	utilvalidation "github.com/kubeedge/kubeedge/pkg/util/validation"
 	"github.com/kubeedge/kubeedge/pkg/version"
-	"github.com/kubeedge/kubeedge/pkg/version/verflag"
 )
 
 // NewEdgeCoreCommand create edgecore cmd
@@ -49,38 +54,86 @@ servers (mosquito), offering publish and subscribe capabilities to other compone
 is the message processor between edged and edgehub. It is also responsible for storing/retrieving metadata
 to/from a lightweight database (SQLite).ServiceBus is a HTTP client to interact with HTTP servers (REST),
 offering HTTP client capabilities to components of cloud to reach HTTP servers running at edge. `,
+		PreRunE: func(_cmd *cobra.Command, _args []string) error {
+			return initForOS(opts)
+		},
 		Run: func(cmd *cobra.Command, args []string) {
-			verflag.PrintAndExitIfRequested()
-			flag.PrintMinConfigAndExitIfRequested(v1alpha1.NewMinEdgeCoreConfig())
-			flag.PrintDefaultConfigAndExitIfRequested(v1alpha1.NewDefaultEdgeCoreConfig())
+			flag.PrintMinConfigAndExitIfRequested(v1alpha2.NewMinEdgeCoreConfig())
+			flag.PrintDefaultConfigAndExitIfRequested(v1alpha2.NewDefaultEdgeCoreConfig())
 			flag.PrintFlags(cmd.Flags())
 
 			if errs := opts.Validate(); len(errs) > 0 {
-				klog.Fatal(util.SpliceErrors(errs))
+				klog.Exit(util.SpliceErrors(errs))
 			}
 
 			config, err := opts.Config()
 			if err != nil {
-				klog.Fatal(err)
+				klog.Exit(err)
+			}
+
+			// should not save token in config file
+			if config.Modules.EdgeHub.Token != "" {
+				go func() {
+					// if receive data from CleanupTokenChan
+					// it means that edgecore apply for ca/certs successfully, then we can cleanup token
+					<-certificate.CleanupTokenChan
+
+					// cleanup token
+					if err := cleanupToken(*config, opts.ConfigFile); err != nil {
+						klog.Exit(err)
+					}
+				}()
+			}
+
+			bootstrapFile := constants.BootstrapFile
+			// get token from bootstrapFile if it exist
+			if utilvalidation.FileIsExist(bootstrapFile) {
+				token, err := os.ReadFile(bootstrapFile)
+				if err != nil {
+					klog.Exit(err)
+				}
+				config.Modules.EdgeHub.Token = strings.TrimSpace(string(token))
 			}
 
 			if errs := validation.ValidateEdgeCoreConfiguration(config); len(errs) > 0 {
-				klog.Fatal(util.SpliceErrors(errs.ToAggregate().Errors()))
+				klog.Exit(util.SpliceErrors(errs.ToAggregate().Errors()))
+			}
+
+			if err := features.DefaultMutableFeatureGate.SetFromMap(config.FeatureGates); err != nil {
+				klog.Exit(err)
 			}
 
 			// To help debugging, immediately log version
 			klog.Infof("Version: %+v", version.Get())
 
-			// Check the running environment by default
-			checkEnv := os.Getenv("CHECK_EDGECORE_ENVIRONMENT")
-			if checkEnv != "false" {
-				// Check running environment before run edge core
-				if err := environmentCheck(); err != nil {
-					klog.Fatal(fmt.Errorf("Failed to check the running environment: %v", err))
+			if config.EdgeCoreVersion != version.Get().String() {
+				config.EdgeCoreVersion = version.Get().String()
+				if err := config.WriteTo(opts.ConfigFile); err != nil {
+					klog.Exitf("failed to update edgecore config file, err: %v", err)
 				}
 			}
 
+			// Force skip check if enable metaserver
+			skipCheck := os.Getenv("CHECK_EDGECORE_ENVIRONMENT") == "false" || config.Modules.MetaManager.MetaServer.Enable
+			// Check running environment before run edge core
+			if err := environmentCheck(skipCheck); err != nil {
+				klog.Exit(fmt.Errorf("failed to check the running environment: %v", err))
+			}
+
+			// Get edge node local ip only when the customInterfaceName has been set.
+			// Defaults to the local IP from the default interface by the default config
+			if config.Modules.Edged.CustomInterfaceName != "" {
+				ip, err := netutil.ChooseBindAddressForInterface(config.Modules.Edged.CustomInterfaceName)
+				if err != nil {
+					klog.Errorf("Failed to get IP address by custom interface %s, err: %v", config.Modules.Edged.CustomInterfaceName, err)
+					os.Exit(1)
+				}
+				config.Modules.Edged.NodeIP = ip.String()
+				klog.Infof("Get IP address by custom interface successfully, %s: %s", config.Modules.Edged.CustomInterfaceName, config.Modules.Edged.NodeIP)
+			}
+
 			registerModules(config)
+
 			// start all modules
 			core.Run()
 		},
@@ -88,7 +141,6 @@ offering HTTP client capabilities to components of cloud to reach HTTP servers r
 	fs := cmd.Flags()
 	namedFs := opts.Flags()
 	flag.AddFlags(namedFs.FlagSet("global"))
-	verflag.AddFlags(namedFs.FlagSet("global"))
 	globalflag.AddGlobalFlags(namedFs.FlagSet("global"), cmd.Name())
 	for _, f := range namedFs.FlagSets {
 		fs.AddFlagSet(f)
@@ -109,53 +161,85 @@ offering HTTP client capabilities to components of cloud to reach HTTP servers r
 	return cmd
 }
 
-// findProcess find a running process by name
-func findProcess(name string) (bool, error) {
-	processes, err := ps.Processes()
+// cleanupToken cleanup the token, and write back to config file disk
+func cleanupToken(config v1alpha2.EdgeCoreConfig, file string) error {
+	config.Modules.EdgeHub.Token = ""
+	d, err := yaml.Marshal(config)
 	if err != nil {
-		return false, err
+		return err
 	}
 
-	for _, process := range processes {
-		if process.Executable() == name {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return os.WriteFile(file, d, 0640)
 }
 
 // environmentCheck check the environment before edgecore start
 // if Check failed,  return errors
-func environmentCheck() error {
-	// if kubelet is running, return error
-	if find, err := findProcess("kubelet"); err != nil {
+func environmentCheck(skipCheck bool) error {
+	if skipCheck {
+		return nil
+	}
+	processes, err := ps.Processes()
+	if err != nil {
 		return err
-	} else if find {
-		return errors.New("Kubelet should not running on edge node when running edgecore")
 	}
 
-	// if kube-proxy is running, return error
-	if find, err := findProcess("kube-proxy"); err != nil {
-		return err
-	} else if find {
-		return errors.New("Kube-proxy should not running on edge node when running edgecore")
+	for _, process := range processes {
+		processName, err := process.Name()
+		if err != nil {
+			// err usually can't be fixed by user, so just skip it instead of return error (we only check named process)
+			continue
+		}
+		switch processName {
+		case "kubelet": // if kubelet is running, return error
+			return errors.New("kubelet should not be running on edge node when starting edgecore")
+		}
 	}
 
 	return nil
 }
 
 // registerModules register all the modules started in edgecore
-func registerModules(c *v1alpha1.EdgeCoreConfig) {
+func registerModules(c *v1alpha2.EdgeCoreConfig) {
+	dao.Init(
+		c.DataBase.DataSource,
+		c.Modules.DeviceTwin,
+		c.Modules.EventBus,
+		c.Modules.MetaManager,
+		c.Modules.ServiceBus,
+	)
+	// register all modules
 	devicetwin.Register(c.Modules.DeviceTwin, c.Modules.Edged.HostnameOverride)
 	edged.Register(c.Modules.Edged)
 	edgehub.Register(c.Modules.EdgeHub, c.Modules.Edged.HostnameOverride)
 	eventbus.Register(c.Modules.EventBus, c.Modules.Edged.HostnameOverride)
-	edgemesh.Register(c.Modules.EdgeMesh)
 	metamanager.Register(c.Modules.MetaManager)
-	servicebus.Register(c.Modules.ServiceBus)
+	servicebus.Register(c.Modules.ServiceBus, buildServiceBusTLSOptions(c.Modules.ServiceBus))
 	edgestream.Register(c.Modules.EdgeStream, c.Modules.Edged.HostnameOverride, c.Modules.Edged.NodeIP)
+	taskmanager.Register(c.Modules.TaskManager)
 	test.Register(c.Modules.DBTest)
-	// Note: Need to put it to the end, and wait for all models to register before executing
-	dbm.InitDBConfig(c.DataBase.DriverName, c.DataBase.AliasName, c.DataBase.DataSource)
+}
+
+// buildServiceBusTLSOptions builds ServiceBus TLS options from the config.
+// TLS is considered intended when either TLSCertFile or TLSPrivateKeyFile is
+// non-empty.  An incomplete pair (one field set, the other empty) is signalled
+// by returning TLSEnabled=true with the partial paths, causing buildTLSConfig
+// to return a clear error rather than silently falling back to plain HTTP.
+// Both fields empty (the default) preserves the plain-HTTP behaviour.
+// The EdgeHub client certificate CANNOT be reused: it carries only
+// ExtKeyUsageClientAuth and has no ServiceBus SANs.
+func buildServiceBusTLSOptions(sb *v1alpha2.ServiceBus) servicebus.TLSOptions {
+	if sb == nil {
+		return servicebus.TLSOptions{}
+	}
+	// Either field being non-empty means the operator intends TLS.
+	// Pass whatever is configured; buildTLSConfig will fail clearly if the
+	// pair is incomplete (e.g. cert set but key empty, or vice versa).
+	if sb.TLSCertFile != "" || sb.TLSPrivateKeyFile != "" {
+		return servicebus.TLSOptions{
+			TLSEnabled: true,
+			CertFile:   sb.TLSCertFile,
+			KeyFile:    sb.TLSPrivateKeyFile,
+		}
+	}
+	return servicebus.TLSOptions{}
 }

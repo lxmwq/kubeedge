@@ -7,6 +7,7 @@ __pycache__
 *.swp
 .idea/*
 .gradle
+.vscode
 
 cloud/cloudcore.log
 cloud/cloudcore
@@ -15,3 +16,8 @@ edge/edgecore
 edgesite/edgesite
 keadm/keadm
 _output
+_tmp
+build/edge/tmp
+
+coverage.out
+go.work.sum

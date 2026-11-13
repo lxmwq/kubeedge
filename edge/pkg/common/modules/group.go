@@ -9,12 +9,12 @@ const (
 	TwinGroup = "twin"
 	// MetaGroup group
 	MetaGroup = "meta"
-	//EdgedGroup group
+	// EdgedGroup group
 	EdgedGroup = "edged"
 	// UserGroup is ServiceBus group
 	UserGroup = "user"
-	// MeshGroup group
-	MeshGroup = "mesh"
 	// StreamGroup group
 	StreamGroup = "edgestream"
+	// TaskGroup is a group name of task-related modules.
+	TaskManagerGroup = "taskmanager"
 )

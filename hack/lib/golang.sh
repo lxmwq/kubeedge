@@ -19,12 +19,33 @@
 # KubeEdge Authors:
 # To Get Detail Version Info for KubeEdge Project
 
-set -o errexit
-set -o nounset
-set -o pipefail
+
+readonly KUBEEDGE_GOPATH="${KUBEEDGE_GOPATH:-"${KUBEEDGE_OUTPUT}/_go"}"
+export KUBEEDGE_GOPATH
 
 YES="y"
 NO="n"
+
+kubeedge::golang::verify_golang_version() {
+  echo "go detail version: $(go version)"
+
+  goversion=$(go version |awk -F ' ' '{printf $3}' |sed 's/go//g')
+
+  echo "go version: $goversion"
+
+  X=$(echo $goversion|awk -F '.' '{printf $1}')
+  Y=$(echo $goversion|awk -F '.' '{printf $2}')
+
+  if [ $X -lt 1 ] ; then
+	  echo "go major version must >= 1, now is $X"
+	  exit 1
+  fi
+
+  if [ $Y -lt 25 ] ; then
+	  echo "go minor version must >= 25, now is $Y"
+	  exit 1
+  fi
+}
 
 kubeedge::version::get_version_info() {
 
@@ -37,7 +58,14 @@ kubeedge::version::get_version_info() {
   fi
 
   GIT_VERSION=$(git describe --tags --abbrev=14 "${GIT_COMMIT}^{commit}" 2>/dev/null)
+  if [[ -z "${GIT_VERSION}" ]]; then
+    echo >&2
+    echo "⚠️  No git tags found." >&2
+    echo "⚠️  Falling back to default version: v0.0.0" >&2
+    echo "⚠️  To avoid this, consider running: git fetch --tags" >&2
 
+    GIT_VERSION="v0.0.0"
+  fi
   # This translates the "git describe" to an actual semver.org
   # compatible semantic version that looks something like this:
   #   v1.1.0-alpha.0.6+84c76d1142ea4d
@@ -131,13 +159,13 @@ kubeedge::golang::binaries_from_targets() {
 
 kubeedge::check::env() {
   errors=()
-  if [ -z $GOPATH ]; then
+  if [ -z $(go env GOPATH) ]; then
     errors+="GOPATH environment value not set"
   fi
 
   # check other env
 
-  # check lenth of errors
+  # check length of errors
   if [[ ${#errors[@]} -ne 0 ]] ; then
     local error
     for error in "${errors[@]}"; do
@@ -152,7 +180,12 @@ ALL_BINARIES_AND_TARGETS=(
   admission:cloud/cmd/admission
   keadm:keadm/cmd/keadm
   edgecore:edge/cmd/edgecore
-  edgesite:edgesite/cmd/edgesite
+  edgesite-agent:edgesite/cmd/edgesite-agent
+  edgesite-server:edgesite/cmd/edgesite-server
+  csidriver:cloud/cmd/csidriver
+  iptablesmanager:cloud/cmd/iptablesmanager
+  edgemark:edge/cmd/edgemark
+  controllermanager:cloud/cmd/controllermanager
 )
 
 kubeedge::golang::get_target_by_binary() {
@@ -176,16 +209,16 @@ kubeedge::golang::get_all_targets() {
   echo ${targets[@]}
 }
 
-kubeedge::golang::get_all_binares() {
-  local -a binares
+kubeedge::golang::get_all_binaries() {
+  local -a binaries
   for bt in "${ALL_BINARIES_AND_TARGETS[@]}" ; do
-    binares+=("${bt%%:*}")
+    binaries+=("${bt%%:*}")
   done
-  echo ${binares[@]}
+  echo ${binaries[@]}
 }
 
 IFS=" " read -ra KUBEEDGE_ALL_TARGETS <<< "$(kubeedge::golang::get_all_targets)"
-IFS=" " read -ra KUBEEDGE_ALL_BINARIES<<< "$(kubeedge::golang::get_all_binares)"
+IFS=" " read -ra KUBEEDGE_ALL_BINARIES<<< "$(kubeedge::golang::get_all_binaries)"
 
 kubeedge::golang::build_binaries() {
   kubeedge::check::env
@@ -218,23 +251,6 @@ kubeedge::golang::build_binaries() {
 
 }
 
-
-KUBEEDGE_ALL_CROSS_BINARIES=(
-edgecore
-edgesite
-)
-
-kubeedge::golang::is_cross_build_binary() {
-  local key=$1
-  for bin in "${KUBEEDGE_ALL_CROSS_BINARIES[@]}" ; do
-    if [ "${bin}" == "${key}" ]; then
-      echo ${YES}
-      return
-    fi
-  done
-  echo ${NO}
-}
-
 KUBEEDGE_ALL_CROSS_GOARMS=(
 8
 7
@@ -256,24 +272,24 @@ kubeedge::golang::cross_build_place_binaries() {
 
   local -a targets=()
   local goarm=${goarm:-${KUBEEDGE_ALL_CROSS_GOARMS[0]}}
+  local goos="linux"
+  local goarch="amd64"
 
   for arg in "$@"; do
       if [[ "${arg}" == GOARM* ]]; then
         # Assume arguments starting with a dash are flags to pass to go.
         goarm="${arg##*GOARM}"
+      elif [[ "${arg}" == GOOS* ]]; then
+        goos="${arg##*GOOS}"
+      elif [[ "${arg}" == GOARCH* ]]; then
+        goarch="${arg##*GOARCH}"
       else
-        if [ "$(kubeedge::golang::is_cross_build_binary ${arg})" == "${NO}" ]; then
-          echo "${arg} does not support cross build"
-          exit 1
-        fi
         targets+=("$(kubeedge::golang::get_target_by_binary $arg)")
       fi
   done
 
   if [[ ${#targets[@]} -eq 0 ]]; then
-    for bin in ${KUBEEDGE_ALL_CROSS_BINARIES[@]}; do
-        targets+=("$(kubeedge::golang::get_target_by_binary $bin)")
-    done
+    targets+=("${KUBEEDGE_ALL_TARGETS[@]}")
   fi
 
   if [ "$(kubeedge::golang::is_supported_goarm ${goarm})" == "${NO}" ]; then
@@ -289,15 +305,24 @@ kubeedge::golang::cross_build_place_binaries() {
 
   mkdir -p ${KUBEEDGE_OUTPUT_BINPATH}
   for bin in ${binaries[@]}; do
-    echo "cross buildding $bin GOARM${goarm}"
     local name="${bin##*/}"
-    if [ "${goarm}" == "8" ]; then
+    if [ "${goos}" == "linux" ] ; then
+      echo "cross building $bin GOARM${goarm} ${goos} ${goarch}"
+      if [ "${goarm}" == "8" ]; then
+        set -x
+        GOARM="" # need to clear the value since golang compiler doesn't allow this env when building the binary for ARMv8.
+        GOARCH=arm64 GOOS=${goos} CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc go build -o ${KUBEEDGE_OUTPUT_BINPATH}/${name} -ldflags "$ldflags" $bin
+        set +x
+      elif [ "${goarm}" == "7" ]; then
+        set -x
+        GOARCH=arm GOOS=${goos} GOARM=${goarm} CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc go build -o ${KUBEEDGE_OUTPUT_BINPATH}/${name} -ldflags "$ldflags" $bin
+        set +x
+      fi
+    elif [ "${goos}" == "windows" ]; then
+      sudo apt-get install -y mingw-w64
+      echo "cross building $bin ${goos} ${goarch}"
       set -x
-      GOARCH=arm64 GOOS="linux" CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc go build -o ${KUBEEDGE_OUTPUT_BINPATH}/${name} -ldflags "$ldflags" $bin
-      set +x
-    elif [ "${goarm}" == "7" ]; then
-      set -x
-      GOARCH=arm GOOS="linux" GOARM=${goarm} CGO_ENABLED=1 CC=arm-linux-gnueabi-gcc go build -o ${KUBEEDGE_OUTPUT_BINPATH}/${name} -ldflags "$ldflags" $bin
+      GOARCH=${goarch} GOOS=${goos} CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go build -o ${KUBEEDGE_OUTPUT_BINPATH}/${name} -ldflags "$ldflags" $bin
       set +x
     fi
   done
@@ -305,7 +330,6 @@ kubeedge::golang::cross_build_place_binaries() {
 
 KUBEEDGE_ALL_SMALL_BINARIES=(
 edgecore
-edgesite
 )
 
 kubeedge::golang::is_small_build_binary() {
@@ -373,7 +397,7 @@ kubeedge::golang::get_cloud_test_dirs() {
 kubeedge::golang::get_keadm_test_dirs() {
     cd ${KUBEEDGE_ROOT}
     findDirs=$(find -L ./keadm \
-	    -name '*_test.go' -print | xargs -n1 dirname | uniq)
+	    -name '*_test.go' -print | xargs -n1 dirname | sort -u)
     dirArray=(${findDirs// /})
     echo "${dirArray[@]}"
 }
@@ -383,26 +407,37 @@ kubeedge::golang::get_edge_test_dirs() {
     local findDirs
     local -a dirArray=()
     cd ${KUBEEDGE_ROOT}
-    findDirs=$(find "./edge/pkg" -name "*_test.go"| xargs -I{} dirname {} | uniq)
+    findDirs=$(find "./edge/pkg" -name "*_test.go"| xargs -I{} dirname {} | sort -u)
     dirArray=(${findDirs// /})
     echo "${dirArray[@]}"
   )
 }
 
+kubeedge::golang::get_pkg_test_dirs() {
+    cd ${KUBEEDGE_ROOT}
+    findDirs=$(find -L ./pkg \
+	    -name '*_test.go' -print | xargs -n1 dirname | sort -u)
+    dirArray=(${findDirs// /})
+    echo "${dirArray[@]}"
+}
+
 read -ra KUBEEDGE_CLOUD_TESTCASES <<< "$(kubeedge::golang::get_cloud_test_dirs)"
 read -ra KUBEEDGE_EDGE_TESTCASES <<< "$(kubeedge::golang::get_edge_test_dirs)"
 read -ra KUBEEDGE_KEADM_TESTCASES <<< "$(kubeedge::golang::get_keadm_test_dirs)"
+read -ra KUBEEDGE_PKG_TESTCASES <<< "$(kubeedge::golang::get_pkg_test_dirs)"
 
 readonly KUBEEDGE_ALL_TESTCASES=(
   ${KUBEEDGE_CLOUD_TESTCASES[@]}
   ${KUBEEDGE_EDGE_TESTCASES[@]}
   ${KUBEEDGE_KEADM_TESTCASES[@]}
+  ${KUBEEDGE_PKG_TESTCASES[@]}
 )
 
 ALL_COMPONENTS_AND_GETTESTDIRS_FUNCTIONS=(
   cloud::::kubeedge::golang::get_cloud_test_dirs
   edge::::kubeedge::golang::get_edge_test_dirs
   keadm::::kubeedge::golang::get_keadm_test_dirs
+  pkg::::kubeedge::golang::get_pkg_test_dirs
 )
 
 kubeedge::golang::get_testdirs_by_component() {
@@ -434,5 +469,55 @@ kubeedge::golang::run_test() {
     testdirs+=("${KUBEEDGE_ALL_TESTCASES[@]}")
   fi
 
-  go test ${testdirs[@]}
+  local profile=${PROFILE:-""}
+  if [[ $profile ]]; then
+    go test -gcflags "all=-N -l" "-coverprofile=${profile}" ${testdirs[@]}
+  else
+    go test -gcflags "all=-N -l" ${testdirs[@]}
+  fi
+}
+
+# kubeedge::golang::setup_env will check that the `go` commands is available in
+# ${PATH}. It will also check that the Go version is good enough for the
+# kubeedge build.
+#
+# Outputs:
+#   env-var GOPATH points to our local output dir
+#   env-var GOBIN is unset (we want binaries in a predictable place)
+#   env-var PATH includes the local GOPATH
+kubeedge::golang::setup_env() {
+  # Even in module mode, we need to set GOPATH for `go build` and `go install`
+  # to work.  We build various tools (usually via `go install`) from a lot of
+  # scripts.
+  #   * We can't just set GOBIN because that does not work on cross-compiles.
+  #   * We could always use `go build -o <something>`, but it's subtle wrt
+  #     cross-compiles and whether the <something> is a file or a directory,
+  #     and EVERY caller has to get it *just* right.
+  #   * We could leave GOPATH alone and let `go install` write binaries
+  #     wherever the user's GOPATH says (or doesn't say).
+  #
+  # Instead we set it to a phony local path and process the results ourselves.
+  # In particular, GOPATH[0]/bin will be used for `go install`, with
+  # cross-compiles adding an extra directory under that.
+  export GOPATH="${KUBEEDGE_GOPATH}"
+
+  # If these are not set, set them now.  This ensures that any subsequent
+  # scripts we run (which may call this function again) use the same values.
+  export GOCACHE="${GOCACHE:-"${KUBEEDGE_GOPATH}/cache/build"}"
+  export GOMODCACHE="${GOMODCACHE:-"${KUBEEDGE_GOPATH}/cache/mod"}"
+
+  # Make sure our own Go binaries are in PATH.
+  export PATH="${KUBEEDGE_GOPATH}/bin:${PATH}"
+
+  # Unset GOBIN in case it already exists in the current session.
+  # Cross-compiles will not work with it set.
+  unset GOBIN
+
+  # Turn on modules and workspaces (both are default-on).
+  unset GO111MODULE
+  unset GOWORK
+
+  # This may try to download our specific Go version.  Do it last so it uses
+  # the above-configured environment.
+  kubeedge::golang::verify_golang_version
 }

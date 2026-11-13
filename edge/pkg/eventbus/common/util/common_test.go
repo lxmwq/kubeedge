@@ -18,56 +18,62 @@ package util
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
-	"github.com/stretchr/testify/assert"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
 	eventconfig "github.com/kubeedge/kubeedge/edge/pkg/eventbus/config"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
 )
 
 var clientOptions = MQTT.NewClientOptions()
 
-//TestCheckKeyExist checks the functionality of CheckKeyExist function
+func init() {
+	nodeName := "testEdge"
+	cfg := v1alpha2.NewDefaultEdgeCoreConfig()
+	eventconfig.InitConfigure(cfg.Modules.EventBus, nodeName)
+}
+
+// TestCheckKeyExist checks the functionality of CheckKeyExist function
 func TestCheckKeyExist(t *testing.T) {
 	tests := []struct {
 		name          string
 		keys          []string
 		disinfo       map[string]interface{}
-		expectedError string
+		expectedError error
 	}{
 		{
 			name:          "TestCheckKeyExist: Key exists in passed map",
 			keys:          []string{"key1"},
 			disinfo:       map[string]interface{}{"key1": "value1"},
-			expectedError: "",
+			expectedError: nil,
 		},
 		{
 			name:          "TestCheckKeyExist: Key does not exists in passed map",
 			keys:          []string{"key1"},
 			disinfo:       map[string]interface{}{"key2": "value2"},
-			expectedError: "key not found",
+			expectedError: errors.New("key not found"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckKeyExist(tt.keys, tt.disinfo)
-			assert.Containsf(t, fmt.Sprintf("%e", err), tt.expectedError, "error message %s", "formatted")
+			if !reflect.DeepEqual(tt.expectedError, err) {
+				t.Errorf("Expected error contain %s, but error is %v", tt.expectedError, err)
+			}
 		})
 	}
 }
 
-//TestCheckClientToken checks client token received
+// TestCheckClientToken checks client token received
 func TestCheckClientToken(t *testing.T) {
-	nodeName := "testEdge"
-	cfg := v1alpha1.NewDefaultEdgeCoreConfig()
-	eventconfig.InitConfigure(cfg.Modules.EventBus, nodeName)
 	tests := []struct {
 		name          string
 		token         MQTT.Token
@@ -88,12 +94,14 @@ func TestCheckClientToken(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rs, err := CheckClientToken(tt.token)
 			fmt.Printf("rs  =  %v", rs)
-			assert.Containsf(t, fmt.Sprintf("%e", err), tt.expectedError, "error message %s", "formatted")
+			if !strings.Contains(err.Error(), tt.expectedError) {
+				t.Errorf("Expected error contain %s, but error is %v", tt.expectedError, err)
+			}
 		})
 	}
 }
 
-//TestPathExist checks the functionality of PathExist function
+// TestPathExist checks the functionality of PathExist function
 func TestPathExist(t *testing.T) {
 	tests := []struct {
 		name string
@@ -120,7 +128,7 @@ func TestPathExist(t *testing.T) {
 	}
 }
 
-//TestHubClientInit checks the HubClientInit method that it returns the same clientOptions object or not
+// TestHubClientInit checks the HubClientInit method that it returns the same clientOptions object or not
 func TestHubClientInit(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -168,17 +176,15 @@ func TestHubClientInit(t *testing.T) {
 			tt.want.Password = tt.password
 			tt.want.TLSConfig = &tls.Config{InsecureSkipVerify: true, ClientAuth: tls.NoClientCert}
 			got := HubClientInit(tt.server, tt.clientID, tt.username, tt.password)
-			assert.Equal(t, tt.want.Servers, got.Servers)
-			assert.Equal(t, tt.want.ClientID, got.ClientID)
-			assert.Equal(t, tt.want.CleanSession, got.CleanSession)
-			assert.Equal(t, tt.want.Username, got.Username)
-			assert.Equal(t, tt.want.Password, got.Password)
-			assert.Equal(t, tt.want.TLSConfig, got.TLSConfig)
+			if !reflect.DeepEqual(tt.want.Servers, got.Servers) || tt.want.ClientID != got.ClientID || tt.want.CleanSession != got.CleanSession ||
+				tt.want.Username != got.Username || tt.want.Password != got.Password || !reflect.DeepEqual(tt.want.TLSConfig, got.TLSConfig) {
+				t.Errorf("expected %#v, but got %#v", tt.want, got)
+			}
 		})
 	}
 }
 
-//TestLoopConnect checks LoopConnect to connect to MQTT broker
+// TestLoopConnect checks LoopConnect to connect to MQTT broker
 func TestLoopConnect(t *testing.T) {
 	tests := []struct {
 		name          string

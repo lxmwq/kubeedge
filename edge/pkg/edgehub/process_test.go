@@ -19,226 +19,187 @@ package edgehub
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"testing"
 	"time"
 
+	"github.com/agiledragon/gomonkey/v2"
 	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
 
+	"github.com/kubeedge/beehive/pkg/common"
 	"github.com/kubeedge/beehive/pkg/core"
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
+	cloudmodules "github.com/kubeedge/kubeedge/cloud/pkg/common/modules"
 	"github.com/kubeedge/kubeedge/edge/mocks/edgehub"
-	module "github.com/kubeedge/kubeedge/edge/pkg/common/modules"
+	"github.com/kubeedge/kubeedge/edge/pkg/common/message"
+	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
 	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/config"
+	msghandler "github.com/kubeedge/kubeedge/edge/pkg/edgehub/messagehandler"
 )
 
-//TestAddKeepChannel() tests the addition of channel to the syncKeeper
-func TestAddKeepChannel(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
-	tests := []struct {
-		name  string
-		hub   *EdgeHub
-		msgID string
-	}{
-		{
-			name: "Adding a valid keep channel",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			msgID: "test",
-		},
+func init() {
+	add := &common.ModuleInfo{
+		ModuleName: modules.EdgeHubModuleName,
+		ModuleType: common.MsgCtxTypeChannel,
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.hub.addKeepChannel(tt.msgID)
-			if !reflect.DeepEqual(tt.hub.syncKeeper[tt.msgID], got) {
-				t.Errorf("TestController_addKeepChannel() = %v, want %v", got, tt.hub.syncKeeper[tt.msgID])
-			}
-		})
-	}
+
+	beehiveContext.InitContext([]string{common.MsgCtxTypeChannel})
+
+	beehiveContext.AddModule(add)
+	beehiveContext.AddModuleGroup(modules.EdgeHubModuleName, modules.EdgeHubModuleName)
 }
 
-//TestDeleteKeepChannel() tests the deletion of channel in the syncKeeper
-func TestDeleteKeepChannel(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
-	tests := []struct {
-		name  string
-		hub   *EdgeHub
-		msgID string
-	}{
-		{
-			name: "Deleting a valid keep channel",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			msgID: "test",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.hub.addKeepChannel(tt.msgID)
-			tt.hub.deleteKeepChannel(tt.msgID)
-			if _, exist := tt.hub.syncKeeper[tt.msgID]; exist {
-				t.Errorf("TestController_deleteKeepChannel = %v, want %v", tt.hub.syncKeeper[tt.msgID], nil)
-			}
-		})
-	}
-}
-
-//TestIsSyncResponse() tests whether there exists a channel with the given message_id in the syncKeeper
-func TestIsSyncResponse(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
-	tests := []struct {
-		name  string
-		hub   *EdgeHub
-		msgID string
-		want  bool
-	}{
-		{
-			name: "Sync message response case",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			msgID: "test",
-			want:  true,
-		},
-		{
-			name: "Non sync message response  case",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			msgID: "",
-			want:  false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.want {
-				tt.hub.addKeepChannel(tt.msgID)
-			}
-			if got := tt.hub.isSyncResponse(tt.msgID); got != tt.want {
-				t.Errorf("TestController_isSyncResponse() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-//TestSendToKeepChannel() tests the reception of response in the syncKeep channel
-func TestSendToKeepChannel(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
-	message := model.NewMessage("test_id")
-	tests := []struct {
-		name                string
-		hub                 *EdgeHub
-		message             *model.Message
-		keepChannelParentID string
-		expectedError       error
-	}{
-		{
-			name: "SyncKeeper Error Case in send to keep channel",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			message:             message,
-			keepChannelParentID: "wrong_id",
-			expectedError:       fmt.Errorf("failed to get sync keeper channel, messageID:%+v", *message),
-		},
-		{
-			name: "Negative Test Case without syncKeeper Error ",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			message:             model.NewMessage("test_id"),
-			keepChannelParentID: "test_id",
-			expectedError:       fmt.Errorf("failed to send message to sync keep channel"),
-		},
-		{
-			name: "Send to keep channel with valid input",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			message:             model.NewMessage("test_id"),
-			keepChannelParentID: "test_id",
-			expectedError:       nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			keep := tt.hub.addKeepChannel(tt.keepChannelParentID)
-			if tt.expectedError == nil {
-				receive := func() {
-					<-keep
-				}
-				go receive()
-			}
-			time.Sleep(1 * time.Second)
-			err := tt.hub.sendToKeepChannel(*tt.message)
-			if !reflect.DeepEqual(err, tt.expectedError) {
-				t.Errorf("TestController_sendToKeepChannel() error = %v, expectedError %v", err, tt.expectedError)
-			}
-		})
-	}
-}
-
-//TestDispatch() tests whether the messages are properly dispatched to their respective modules
+// TestDispatch() tests whether the messages are properly dispatched to their respective modules
 func TestDispatch(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
+	var handleLog string
+
+	patches := gomonkey.NewPatches()
+	defer patches.Reset()
+
+	patches.ApplyFunc(beehiveContext.SendToGroup, func(group string, _msg model.Message) {
+		handleLog = fmt.Sprintf("send to %s group", group)
+	})
+	patches.ApplyFunc(beehiveContext.Send, func(module string, _msg model.Message) {
+		handleLog = fmt.Sprintf("send to %s module", module)
+	})
+	patches.ApplyFunc(beehiveContext.SendResp, func(msg model.Message) {
+		handleLog = fmt.Sprintf("send response to %s", msg.GetParentID())
+	})
+
 	tests := []struct {
-		name          string
-		hub           *EdgeHub
-		message       *model.Message
-		expectedError error
-		isResponse    bool
+		name              string
+		message           *model.Message
+		expectedHandleLog string
+		expectedError     string
 	}{
 		{
-			name: "dispatch with valid input",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			message:       model.NewMessage("").BuildRouter(ModuleNameEdgeHub, module.TwinGroup, "", ""),
-			expectedError: nil,
-			isResponse:    false,
+			name: "error case in dispatch",
+			message: model.NewMessage("test").
+				BuildRouter(modules.EdgeHubModuleName, modules.EdgedGroup, "", ""),
+			expectedError: "failed to handle message, no handler found for the message, message group: edged",
 		},
 		{
-			name: "Error Case in dispatch",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			message:       model.NewMessage("test").BuildRouter(ModuleNameEdgeHub, module.EdgedGroup, "", ""),
-			expectedError: fmt.Errorf("msg_group not found"),
-			isResponse:    true,
+			name: "dispatch to twin group and not support response",
+			message: model.NewMessage("parent").
+				BuildRouter(modules.EdgeHubModuleName, modules.TwinGroup, "", ""),
+			expectedHandleLog: "send to twin group",
 		},
 		{
-			name: "Response Case in dispatch",
-			hub: &EdgeHub{
-				syncKeeper: make(map[string]chan model.Message),
-			},
-			message:       model.NewMessage("test").BuildRouter(ModuleNameEdgeHub, module.TwinGroup, "", ""),
-			expectedError: nil,
-			isResponse:    true,
+			name: "dispatch to event bus module",
+			message: model.NewMessage("").
+				BuildRouter("router_eventbus", message.UserGroupName, "", ""),
+			expectedHandleLog: "send to eventbus module",
+		},
+		{
+			name: "dispatch to service bus module",
+			message: model.NewMessage("").
+				BuildRouter("router_servicebus", message.UserGroupName, "", ""),
+			expectedHandleLog: "send to servicebus module",
+		},
+		{
+			name: "dispatch to service bus module to call response",
+			message: model.NewMessage("parent").
+				BuildRouter("router_servicebus", message.UserGroupName, "", ""),
+			expectedHandleLog: "send response to parent",
+		},
+		{
+			name: "dispatch to meta group with resource message group",
+			message: model.NewMessage("").
+				BuildRouter(modules.EdgeHubModuleName, message.ResourceGroupName, "", ""),
+			expectedHandleLog: "send to meta group",
+		},
+		{
+			name: "dispatch to meta group with func message group",
+			message: model.NewMessage("").
+				BuildRouter(modules.EdgeHubModuleName, message.FuncGroupName, "", ""),
+			expectedHandleLog: "send to meta group",
+		},
+		{
+			name: "dispatch to meta group to call response",
+			message: model.NewMessage("parent").
+				BuildRouter(modules.EdgeHubModuleName, message.FuncGroupName, "", ""),
+			expectedHandleLog: "send response to parent",
+		},
+		{
+			name: "dispatch to taskmassage module and not support response",
+			message: model.NewMessage("parent").
+				BuildRouter(modules.EdgeHubModuleName, cloudmodules.TaskManagerModuleName, "", ""),
+			expectedHandleLog: "send to taskmanager module",
 		},
 	}
+
+	msghandler.RegisterHandlers()
+	hub := &EdgeHub{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.expectedError == nil && !tt.isResponse {
-				receive := func() {
-					keepChannel := tt.hub.addKeepChannel(tt.message.GetParentID())
-					<-keepChannel
-				}
-				go receive()
+			handleLog = ""
+			err := hub.dispatch(*tt.message)
+			if tt.expectedError != "" {
+				require.ErrorContains(t, err, tt.expectedError)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.expectedHandleLog, handleLog)
 			}
-			time.Sleep(1 * time.Second)
-			err := tt.hub.dispatch(*tt.message)
-			if !reflect.DeepEqual(err, tt.expectedError) {
-				t.Errorf("TestController_dispatch() error = %v, wantErr %v", err, tt.expectedError)
+
+			// New logic, ignore it
+			if tt.message.GetGroup() == cloudmodules.TaskManagerModuleName {
+				return
+			}
+
+			// Verify that logic has not changed due to changes
+			handleLog = ""
+			checkSameAsHistoricalDispatch(*tt.message)
+			if tt.expectedError != "" {
+				require.False(t, checkSameAsHistoricalDispatchFilter(*tt.message))
+			} else {
+				require.True(t, checkSameAsHistoricalDispatchFilter(*tt.message))
+				require.Equal(t, tt.expectedHandleLog, handleLog)
 			}
 		})
 	}
 }
 
-//TestRouteToEdge() is used to test whether the message received from websocket is dispatched to the required modules
+func checkSameAsHistoricalDispatchFilter(msg model.Message) bool {
+	group := msg.GetGroup()
+	return group == message.ResourceGroupName || group == modules.TwinGroup ||
+		group == message.FuncGroupName || group == message.UserGroupName
+}
+
+func checkSameAsHistoricalDispatch(msg model.Message) {
+	group := msg.GetGroup()
+	md := ""
+	switch group {
+	case message.ResourceGroupName:
+		md = modules.MetaGroup
+	case modules.TwinGroup:
+		md = modules.TwinGroup
+	case message.FuncGroupName:
+		md = modules.MetaGroup
+	case message.UserGroupName:
+		md = modules.BusGroup
+	}
+
+	if group == modules.TwinGroup {
+		beehiveContext.SendToGroup(md, msg)
+		return
+	}
+
+	if msg.GetParentID() != "" {
+		beehiveContext.SendResp(msg)
+		return
+	}
+	if group == message.UserGroupName && msg.GetSource() == "router_eventbus" {
+		beehiveContext.Send(modules.EventBusModuleName, msg)
+	} else if group == message.UserGroupName && msg.GetSource() == "router_servicebus" {
+		beehiveContext.Send(modules.ServiceBusModuleName, msg)
+	} else {
+		beehiveContext.SendToGroup(md, msg)
+	}
+}
+
+// TestRouteToEdge() is used to test whether the message received from websocket is dispatched to the required modules
 func TestRouteToEdge(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 	mockAdapter := edgehub.NewMockAdapter(mockCtrl)
@@ -263,10 +224,16 @@ func TestRouteToEdge(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockAdapter.EXPECT().Receive().Return(*model.NewMessage("test").BuildRouter(ModuleNameEdgeHub, module.EdgedGroup, "", ""), nil).Times(tt.receiveTimes)
-			mockAdapter.EXPECT().Receive().Return(*model.NewMessage("test").BuildRouter(ModuleNameEdgeHub, module.TwinGroup, "", ""), nil).Times(tt.receiveTimes)
-			mockAdapter.EXPECT().Receive().Return(*model.NewMessage(""), errors.New("Connection Refused")).Times(1)
-			go tt.hub.routeToEdge()
+			mockAdapter.EXPECT().Receive().
+				Return(*model.NewMessage("test").BuildRouter(modules.EdgeHubModuleName, modules.EdgedGroup, "", ""), nil).
+				Times(tt.receiveTimes)
+			mockAdapter.EXPECT().Receive().
+				Return(*model.NewMessage("test").BuildRouter(modules.EdgeHubModuleName, modules.TwinGroup, "", ""), nil).
+				Times(tt.receiveTimes)
+			mockAdapter.EXPECT().Receive().
+				Return(*model.NewMessage(""), errors.New("Connection Refused")).
+				Times(1)
+			go tt.hub.routeToEdge(make(chan struct{}))
 			stop := <-tt.hub.reconnectChan
 			if stop != struct{}{} {
 				t.Errorf("TestRouteToEdge error got: %v want: %v", stop, struct{}{})
@@ -275,9 +242,8 @@ func TestRouteToEdge(t *testing.T) {
 	}
 }
 
-//TestSendToCloud() tests whether the send to cloud functionality works properly
+// TestSendToCloud() tests whether the send to cloud functionality works properly
 func TestSendToCloud(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 	mockAdapter := edgehub.NewMockAdapter(mockCtrl)
@@ -288,45 +254,38 @@ func TestSendToCloud(t *testing.T) {
 		name            string
 		hub             *EdgeHub
 		message         model.Message
-		expectedError   error
-		waitError       bool
+		expectedError   string
 		mockError       error
 		HeartbeatPeriod int32
 	}{
 		{
 			name: "send to cloud with proper input",
 			hub: &EdgeHub{
-				chClient:   mockAdapter,
-				syncKeeper: make(map[string]chan model.Message),
+				chClient: mockAdapter,
 			},
 			HeartbeatPeriod: 6,
 			message:         *msg,
-			expectedError:   nil,
-			waitError:       false,
+			expectedError:   "",
 			mockError:       nil,
 		},
 		{
 			name: "Wait Error in send to cloud",
 			hub: &EdgeHub{
-				chClient:   mockAdapter,
-				syncKeeper: make(map[string]chan model.Message),
+				chClient: mockAdapter,
 			},
 			HeartbeatPeriod: 3,
 			message:         *msg,
-			expectedError:   nil,
-			waitError:       true,
+			expectedError:   "",
 			mockError:       nil,
 		},
 		{
 			name: "Send Failure in send to cloud",
 			hub: &EdgeHub{
-				chClient:   mockAdapter,
-				syncKeeper: make(map[string]chan model.Message),
+				chClient: mockAdapter,
 			},
 			HeartbeatPeriod: 3,
 			message:         model.Message{},
-			expectedError:   fmt.Errorf("failed to send message, error: Connection Refused"),
-			waitError:       false,
+			expectedError:   "failed to send message, error: Connection Refused",
 			mockError:       errors.New("Connection Refused"),
 		},
 	}
@@ -334,35 +293,23 @@ func TestSendToCloud(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAdapter.EXPECT().Send(gomock.Any()).Return(tt.mockError).Times(1)
 			config.Config.Heartbeat = tt.HeartbeatPeriod
-			if !tt.waitError && tt.expectedError == nil {
-				go tt.hub.sendToCloud(tt.message)
-				time.Sleep(1 * time.Second)
-				tempChannel := tt.hub.syncKeeper["test_id"]
-				tempChannel <- *model.NewMessage("test_id")
-				time.Sleep(1 * time.Second)
-				if _, exist := tt.hub.syncKeeper["test_id"]; exist {
-					t.Errorf("SendToCloud() error in receiving message")
-				}
-				return
-			}
 			err := tt.hub.sendToCloud(tt.message)
-			if !reflect.DeepEqual(err, tt.expectedError) {
-				t.Errorf("SendToCloud() error = %v, wantErr %v", err, tt.expectedError)
-			}
-			time.Sleep(time.Duration(tt.HeartbeatPeriod+2) * time.Second)
-			if _, exist := tt.hub.syncKeeper["test_id"]; exist {
-				t.Errorf("SendToCloud() error in waiting for timeout")
+			if tt.expectedError != "" {
+				require.ErrorContains(t, err, tt.expectedError)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
 }
 
-//TestRouteToCloud() tests the reception of the message from the beehive framework and forwarding of that message to cloud
+// TestRouteToCloud() tests the reception of the message from the beehive framework and forwarding of that message to cloud
 func TestRouteToCloud(t *testing.T) {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 	mockAdapter := edgehub.NewMockAdapter(mockCtrl)
+	config.Config.MessageQPS = 3
+	config.Config.MessageBurst = 6
 	hub := newEdgeHub(true)
 	hub.chClient = mockAdapter
 
@@ -378,12 +325,14 @@ func TestRouteToCloud(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAdapter.EXPECT().Send(gomock.Any()).Return(errors.New("Connection Refused")).AnyTimes()
-			go tt.hub.routeToCloud()
+
+			core.Register(&EdgeHub{enable: true})
+
+			go tt.hub.routeToCloud(make(chan struct{}))
 			time.Sleep(2 * time.Second)
-			core.Register(&EdgeHub{})
-			beehiveContext.AddModule(ModuleNameEdgeHub)
+
 			msg := model.NewMessage("").BuildHeader("test_id", "", 1)
-			beehiveContext.Send(ModuleNameEdgeHub, *msg)
+			beehiveContext.Send(modules.EdgeHubModuleName, *msg)
 			stopChan := <-tt.hub.reconnectChan
 			if stopChan != struct{}{} {
 				t.Errorf("Error in route to cloud")
@@ -392,11 +341,11 @@ func TestRouteToCloud(t *testing.T) {
 	}
 }
 
-//TestKeepalive() tests whether ping message sent to the cloud at regular intervals happens properly
+// TestKeepalive() tests whether ping message sent to the cloud at regular intervals happens properly
 func TestKeepalive(t *testing.T) {
 	CertFile := "/tmp/kubeedge/certs/edge.crt"
 	KeyFile := "/tmp/kubeedge/certs/edge.key"
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
+
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 	mockAdapter := edgehub.NewMockAdapter(mockCtrl)
@@ -407,8 +356,12 @@ func TestKeepalive(t *testing.T) {
 		{
 			name: "Heartbeat failure Case",
 			hub: &EdgeHub{
-				chClient:      mockAdapter,
-				reconnectChan: make(chan struct{}),
+				chClient: mockAdapter,
+				// buffered(1) is the production invariant established by
+				// newEdgeHub; triggerReconnect's non-blocking send relies
+				// on it (an unbuffered channel would race with the
+				// receiver parking and could drop the signal).
+				reconnectChan: make(chan struct{}, 1),
 			},
 		},
 	}
@@ -420,11 +373,58 @@ func TestKeepalive(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAdapter.EXPECT().Send(gomock.Any()).Return(nil).Times(1)
 			mockAdapter.EXPECT().Send(gomock.Any()).Return(errors.New("Connection Refused")).Times(1)
-			go tt.hub.keepalive()
+			go tt.hub.keepalive(make(chan struct{}))
 			got := <-tt.hub.reconnectChan
 			if got != struct{}{} {
 				t.Errorf("TestKeepalive() StopChan = %v, want %v", got, struct{}{})
 			}
 		})
+	}
+}
+
+// TestKeepaliveStopsOnConnectionTeardown verifies that closing the
+// connection's stop channel ends the keepalive goroutine while it waits for
+// the next heartbeat, so it cannot outlive its connection and keep pinging on
+// the next one.
+func TestKeepaliveStopsOnConnectionTeardown(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+	mockAdapter := edgehub.NewMockAdapter(mockCtrl)
+	hub := &EdgeHub{
+		chClient:      mockAdapter,
+		reconnectChan: make(chan struct{}, 1),
+	}
+	heartbeat := config.Config.Heartbeat
+	config.Config.Heartbeat = 3600
+	defer func() { config.Config.Heartbeat = heartbeat }()
+
+	sent := make(chan struct{}, 1)
+	mockAdapter.EXPECT().Send(gomock.Any()).DoAndReturn(func(model.Message) error {
+		sent <- struct{}{}
+		return nil
+	}).Times(1)
+
+	stop := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		hub.keepalive(stop)
+		close(exited)
+	}()
+
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not send the first heartbeat")
+	}
+	close(stop)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not exit after stop was closed")
+	}
+	select {
+	case <-hub.reconnectChan:
+		t.Fatal("stopping keepalive must not request a reconnect")
+	default:
 	}
 }

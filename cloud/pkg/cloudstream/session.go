@@ -21,9 +21,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"k8s.io/klog"
-
 	"github.com/gorilla/websocket"
+	"k8s.io/klog/v2"
+
 	"github.com/kubeedge/kubeedge/pkg/stream"
 )
 
@@ -41,14 +41,16 @@ type Session struct {
 
 	// apiServerConn indicates a connection request made by multiple apiserver to one edgecore
 	apiServerConn map[uint64]APIServerConnection
-	apiConnlock   *sync.Mutex
+	apiConnlock   *sync.RWMutex
 }
 
 func (s *Session) WriteMessageToTunnel(m *stream.Message) error {
-	return m.WriteTo(s.tunnel)
+	return s.tunnel.WriteMessage(m)
 }
 
 func (s *Session) Close() {
+	s.apiConnlock.Lock()
+	defer s.apiConnlock.Unlock()
 	for _, c := range s.apiServerConn {
 		c.SetEdgePeerDone()
 	}
@@ -84,13 +86,16 @@ func (s *Session) Serve() {
 }
 
 func (s *Session) ProxyTunnelMessageToApiserver(message *stream.Message) error {
+	s.apiConnlock.RLock()
+	defer s.apiConnlock.RUnlock()
 	kubeCon, ok := s.apiServerConn[message.ConnectID]
 	if !ok {
-		return fmt.Errorf("Can not find apiServer connection id %v in %v",
+		return fmt.Errorf("can not find apiServer connection id %v in %v",
 			message.ConnectID, s.String())
 	}
 	switch message.MessageType {
 	case stream.MessageTypeRemoveConnect:
+		klog.V(6).Infof("delete connection %v from %v", message.ConnectID, s.String())
 		kubeCon.SetEdgePeerDone()
 	case stream.MessageTypeData:
 		for i := 0; i < len(message.Data); {
@@ -111,10 +116,12 @@ func (s *Session) String() string {
 
 func (s *Session) AddAPIServerConnection(ss *StreamServer, connection APIServerConnection) (APIServerConnection, error) {
 	id := atomic.AddUint64(&(ss.nextMessageID), 1)
+
 	s.apiConnlock.Lock()
 	defer s.apiConnlock.Unlock()
+
 	if s.tunnelClosed {
-		return nil, fmt.Errorf("The tunnel connection of %v has closed", s.String())
+		return nil, fmt.Errorf("the tunnel connection of %v has closed", s.String())
 	}
 	connection.SetMessageID(id)
 	s.apiServerConn[id] = connection
@@ -124,7 +131,10 @@ func (s *Session) AddAPIServerConnection(ss *StreamServer, connection APIServerC
 
 func (s *Session) DeleteAPIServerConnection(con APIServerConnection) {
 	s.apiConnlock.Lock()
-	defer s.apiConnlock.Unlock()
 	delete(s.apiServerConn, con.GetMessageID())
+	// Other operations do not affect the release of the lock,
+	// but will increase the lock holding time,
+	// so the lock needs to be released in advance.
+	s.apiConnlock.Unlock()
 	klog.Infof("Delete a apiserver connection %s from %s", con.String(), s.String())
 }

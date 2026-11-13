@@ -21,23 +21,37 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"k8s.io/client-go/rest"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
+	"github.com/kubeedge/api/apis/devices/v1beta1"
+	crdClientset "github.com/kubeedge/api/client/clientset/versioned"
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/kubeedge/cloud/pkg/apis/devices/v1alpha2"
+	keclient "github.com/kubeedge/kubeedge/cloud/pkg/common/client"
+	utilcontext "github.com/kubeedge/kubeedge/cloud/pkg/common/context"
+	"github.com/kubeedge/kubeedge/cloud/pkg/common/messagelayer"
 	"github.com/kubeedge/kubeedge/cloud/pkg/common/modules"
 	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/config"
 	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/constants"
-	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/messagelayer"
 	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/types"
-	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/utils"
+	commonconst "github.com/kubeedge/kubeedge/common/constants"
 )
 
 // DeviceStatus is structure to patch device status
 type DeviceStatus struct {
-	Status v1alpha2.DeviceStatus `json:"status"`
+	Status v1beta1.DeviceStatusStatus `json:"status"`
+}
+
+// DeviceStatusCRDPatch is structure to patch device status CRD with Extensions excluded
+type DeviceStatusCRDPatch struct {
+	Status DeviceStatusStatusPatch `json:"status"`
+}
+
+// DeviceStatusStatusPatch is structure to patch device status status with Extensions excluded
+type DeviceStatusStatusPatch struct {
+	Twins          []v1beta1.Twin `json:"twins,omitempty"`
+	State          string         `json:"state,omitempty"`
+	LastOnlineTime string         `json:"lastOnlineTime,omitempty"`
 }
 
 const (
@@ -45,15 +59,18 @@ const (
 	MergePatchType = "application/merge-patch+json"
 	// ResourceTypeDevices is plural of device resource in apiserver
 	ResourceTypeDevices = "devices"
+	// ResourceTypeDeviceStatuses is plural of device status resource in apiserver
+	ResourceTypeDeviceStatuses = "devicestatuses"
 )
 
 // UpstreamController subscribe messages from edge and sync to k8s api server
 type UpstreamController struct {
-	crdClient    *rest.RESTClient
+	crdClient    crdClientset.Interface
 	messageLayer messagelayer.MessageLayer
-	// message channel
-	deviceStatusChan chan model.Message
-
+	// deviceTwinsChan message channel
+	deviceTwinsChan chan model.Message
+	// deviceStates message channel
+	deviceStatesChan chan model.Message
 	// downstream controller to update device status in cache
 	dc *DownstreamController
 }
@@ -62,10 +79,11 @@ type UpstreamController struct {
 func (uc *UpstreamController) Start() error {
 	klog.Info("Start upstream devicecontroller")
 
-	uc.deviceStatusChan = make(chan model.Message, config.Config.Buffer.UpdateDeviceStatus)
+	uc.deviceTwinsChan = make(chan model.Message, config.Config.Buffer.UpdateDeviceTwins)
+	uc.deviceStatesChan = make(chan model.Message, config.Config.Buffer.UpdateDeviceStates)
 	go uc.dispatchMessage()
 
-	for i := 0; i < int(config.Config.Buffer.UpdateDeviceStatus); i++ {
+	for i := 0; i < int(config.Config.Load.UpdateDeviceStatusWorkers); i++ {
 		go uc.updateDeviceStatus()
 	}
 	return nil
@@ -87,7 +105,7 @@ func (uc *UpstreamController) dispatchMessage() {
 
 		klog.Infof("Dispatch message: %s", msg.GetID())
 
-		resourceType, err := messagelayer.GetResourceType(msg.GetResource())
+		resourceType, err := messagelayer.GetResourceTypeForDevice(msg.GetResource())
 		if err != nil {
 			klog.Warningf("Parse message: %s resource type with error: %s", msg.GetID(), err)
 			continue
@@ -96,7 +114,10 @@ func (uc *UpstreamController) dispatchMessage() {
 
 		switch resourceType {
 		case constants.ResourceTypeTwinEdgeUpdated:
-			uc.deviceStatusChan <- msg
+			uc.deviceTwinsChan <- msg
+		case constants.ResourceDeviceStateUpdated:
+			uc.deviceStatesChan <- msg
+		case constants.ResourceTypeMembershipDetail:
 		default:
 			klog.Warningf("Message: %s, with resource type: %s not intended for device controller", msg.GetID(), resourceType)
 		}
@@ -109,7 +130,81 @@ func (uc *UpstreamController) updateDeviceStatus() {
 		case <-beehiveContext.Done():
 			klog.Info("Stop updateDeviceStatus")
 			return
-		case msg := <-uc.deviceStatusChan:
+		case msg := <-uc.deviceStatesChan:
+			klog.Infof("Message: %s, operation is: %s, and resource is: %s", msg.GetID(), msg.GetOperation(), msg.GetResource())
+			msgState, err := uc.unmarshalDeviceStatesMessage(msg)
+			if err != nil {
+				klog.Warningf("Unmarshall failed due to error %v", err)
+				continue
+			}
+			deviceID, err := messagelayer.GetDeviceID(msg.GetResource())
+			if err != nil {
+				klog.Warning("Failed to get device id")
+				continue
+			}
+
+			device, ok := uc.dc.deviceManager.Device.Load(deviceID)
+			if !ok {
+				klog.Warningf("Device %s does not exist in upstream controller", deviceID)
+				continue
+			}
+			cacheDevice, ok := device.(*v1beta1.Device)
+			if !ok {
+				klog.Warning("Failed to assert to CacheDevice type")
+				continue
+			}
+
+			cachedDeviceStatus, err := uc.dc.getOrCreateDeviceStatusForDevice(cacheDevice)
+			if err != nil {
+				klog.Warningf("Failed to ensure device status for device %s", deviceID)
+				continue
+			}
+
+			// Store the status in cache so that when update is received by informer
+			cachedDeviceStatus.Status.State = msgState.Device.State
+			cachedDeviceStatus.Status.LastOnlineTime = msgState.Device.LastOnlineTime
+			uc.dc.deviceStatusManager.DeviceStatus.Store(deviceID, cachedDeviceStatus)
+
+			deviceStatusPatch := &DeviceStatusCRDPatch{
+				Status: DeviceStatusStatusPatch{
+					State:          cachedDeviceStatus.Status.State,
+					LastOnlineTime: cachedDeviceStatus.Status.LastOnlineTime,
+				},
+			}
+
+			body, err := json.Marshal(deviceStatusPatch)
+			if err != nil {
+				klog.Errorf("Failed to marshal device states %v", cachedDeviceStatus.Status)
+				continue
+			}
+			err = uc.crdClient.DevicesV1beta1().RESTClient().Patch(MergePatchType).Namespace(cachedDeviceStatus.Namespace).Resource(ResourceTypeDeviceStatuses).Name(cachedDeviceStatus.Name).Body(body).Do(context.Background()).Error()
+			if err != nil {
+				klog.Errorf("Failed to patch device states %v of device %v in namespace %v, err: %v", cachedDeviceStatus,
+					deviceID, cachedDeviceStatus.Namespace, err)
+				continue
+			}
+
+			//send confirm message to edge twin
+			resMsg := model.NewMessage(msg.GetID())
+			nodeID, err := messagelayer.GetNodeID(msg)
+			if err != nil {
+				klog.Warningf("Message: %s process failure, get node id failed with error: %s", msg.GetID(), err)
+				continue
+			}
+			resource, err := messagelayer.BuildResourceForDevice(nodeID, "twin", "")
+			if err != nil {
+				klog.Warningf("Message: %s process failure, build message resource failed with error: %s", msg.GetID(), err)
+				continue
+			}
+			resMsg.BuildRouter(modules.DeviceControllerModuleName, constants.GroupTwin, resource, model.ResponseOperation)
+			resMsg.Content = commonconst.MessageSuccessfulContent
+			err = uc.messageLayer.Response(*resMsg)
+			if err != nil {
+				klog.Warningf("Message: %s process failure, response failed with error: %s", msg.GetID(), err)
+				continue
+			}
+			klog.Infof("Message: %s process successfully", msg.GetID())
+		case msg := <-uc.deviceTwinsChan:
 			klog.Infof("Message: %s, operation is: %s, and resource is: %s", msg.GetID(), msg.GetOperation(), msg.GetResource())
 			msgTwin, err := uc.unmarshalDeviceStatusMessage(msg)
 			if err != nil {
@@ -121,21 +216,30 @@ func (uc *UpstreamController) updateDeviceStatus() {
 				klog.Warning("Failed to get device id")
 				continue
 			}
+
 			device, ok := uc.dc.deviceManager.Device.Load(deviceID)
 			if !ok {
 				klog.Warningf("Device %s does not exist in downstream controller", deviceID)
 				continue
 			}
-			cacheDevice, ok := device.(*v1alpha2.Device)
+			cacheDevice, ok := device.(*v1beta1.Device)
 			if !ok {
 				klog.Warning("Failed to assert to CacheDevice type")
 				continue
 			}
-			deviceStatus := &DeviceStatus{Status: cacheDevice.Status}
+
+			cachedDeviceStatus, err := uc.dc.getOrCreateDeviceStatusForDevice(cacheDevice)
+			if err != nil {
+				klog.Warningf("Failed to ensure device status for device %s", deviceID)
+				continue
+			}
+
+			deviceStatus := &DeviceStatus{Status: cachedDeviceStatus.Status}
 			for twinName, twin := range msgTwin.Twin {
-				for i, cacheTwin := range deviceStatus.Status.Twins {
-					if twinName == cacheTwin.PropertyName && twin.Actual != nil && twin.Actual.Value != nil {
-						reported := v1alpha2.TwinProperty{}
+				deviceTwin := findOrCreateTwinByName(twinName, cacheDevice.Spec.Properties, deviceStatus)
+				if deviceTwin != nil {
+					if twin.Actual != nil && twin.Actual.Value != nil {
+						reported := v1beta1.TwinProperty{}
 						reported.Value = *twin.Actual.Value
 						reported.Metadata = make(map[string]string)
 						if twin.Actual.Metadata != nil {
@@ -144,24 +248,42 @@ func (uc *UpstreamController) updateDeviceStatus() {
 						if twin.Metadata != nil {
 							reported.Metadata["type"] = twin.Metadata.Type
 						}
-						deviceStatus.Status.Twins[i].Reported = reported
-						break
+						deviceTwin.Reported = reported
+					}
+
+					if twin.Expected != nil && twin.Expected.Value != nil {
+						observedDesired := v1beta1.TwinProperty{}
+						observedDesired.Value = *twin.Expected.Value
+						observedDesired.Metadata = make(map[string]string)
+						if twin.Expected.Metadata != nil {
+							observedDesired.Metadata["timestamp"] = strconv.FormatInt(twin.Expected.Metadata.Timestamp, 10)
+						}
+						if twin.Metadata != nil {
+							observedDesired.Metadata["type"] = twin.Metadata.Type
+						}
+						deviceTwin.ObservedDesired = observedDesired
 					}
 				}
 			}
 
-			// Store the status in cache so that when update is received by informer, it is not processed by downstream controller
-			cacheDevice.Status = deviceStatus.Status
-			uc.dc.deviceManager.Device.Store(deviceID, cacheDevice)
+			// Store the status in cache so that when update is received by informer
+			cachedDeviceStatus.Status.Twins = deviceStatus.Status.Twins
+			uc.dc.deviceStatusManager.DeviceStatus.Store(deviceID, cachedDeviceStatus)
 
-			body, err := json.Marshal(deviceStatus)
+			DeviceStatusPatch := &DeviceStatusCRDPatch{
+				Status: DeviceStatusStatusPatch{
+					Twins: deviceStatus.Status.Twins,
+				},
+			}
+
+			body, err := json.Marshal(DeviceStatusPatch)
 			if err != nil {
 				klog.Errorf("Failed to marshal device status %v", deviceStatus)
 				continue
 			}
-			result := uc.crdClient.Patch(MergePatchType).Namespace(cacheDevice.Namespace).Resource(ResourceTypeDevices).Name(deviceID).Body(body).Do(context.Background())
-			if result.Error() != nil {
-				klog.Errorf("Failed to patch device status %v of device %v in namespace %v", deviceStatus, deviceID, cacheDevice.Namespace)
+			err = uc.crdClient.DevicesV1beta1().RESTClient().Patch(MergePatchType).Namespace(cacheDevice.Namespace).Resource(ResourceTypeDeviceStatuses).Name(cachedDeviceStatus.Name).Body(body).Do(utilcontext.FromMessage(context.Background(), msg)).Error()
+			if err != nil {
+				klog.Errorf("Failed to patch device status %v of device %v in namespace %v, err: %v", deviceStatus, deviceID, cacheDevice.Namespace, err)
 				continue
 			}
 			//send confirm message to edge twin
@@ -171,13 +293,13 @@ func (uc *UpstreamController) updateDeviceStatus() {
 				klog.Warningf("Message: %s process failure, get node id failed with error: %s", msg.GetID(), err)
 				continue
 			}
-			resource, err := messagelayer.BuildResource(nodeID, "twin", "")
+			resource, err := messagelayer.BuildResourceForDevice(nodeID, "twin", "")
 			if err != nil {
 				klog.Warningf("Message: %s process failure, build message resource failed with error: %s", msg.GetID(), err)
 				continue
 			}
 			resMsg.BuildRouter(modules.DeviceControllerModuleName, constants.GroupTwin, resource, model.ResponseOperation)
-			resMsg.Content = "OK"
+			resMsg.Content = commonconst.MessageSuccessfulContent
 			err = uc.messageLayer.Response(*resMsg)
 			if err != nil {
 				klog.Warningf("Message: %s process failure, response failed with error: %s", msg.GetID(), err)
@@ -189,42 +311,63 @@ func (uc *UpstreamController) updateDeviceStatus() {
 }
 
 func (uc *UpstreamController) unmarshalDeviceStatusMessage(msg model.Message) (*types.DeviceTwinUpdate, error) {
-	content := msg.GetContent()
-	twinUpdate := &types.DeviceTwinUpdate{}
-	var contentData []byte
-	var err error
-	contentData, ok := content.([]byte)
-	if !ok {
-		contentData, err = json.Marshal(content)
-		if err != nil {
-			return nil, err
-		}
-	}
-	err = json.Unmarshal(contentData, twinUpdate)
+	contentData, err := msg.GetContentData()
 	if err != nil {
+		return nil, err
+	}
+
+	twinUpdate := &types.DeviceTwinUpdate{}
+	if err := json.Unmarshal(contentData, twinUpdate); err != nil {
 		return nil, err
 	}
 	return twinUpdate, nil
 }
 
+func (uc *UpstreamController) unmarshalDeviceStatesMessage(msg model.Message) (*types.DeviceStateUpdate, error) {
+	contentData, err := msg.GetContentData()
+	if err != nil {
+		return nil, err
+	}
+
+	stateUpdate := &types.DeviceStateUpdate{}
+	if err := json.Unmarshal(contentData, stateUpdate); err != nil {
+		return nil, err
+	}
+	return stateUpdate, nil
+}
+
 // NewUpstreamController create UpstreamController from config
 func NewUpstreamController(dc *DownstreamController) (*UpstreamController, error) {
-	config, err := utils.KubeConfig()
-	if err != nil {
-		klog.Warningf("Failed to create kube client: %s", err)
-		return nil, err
-	}
-
-	crdcli, err := utils.NewCRDClient(config)
-	if err != nil {
-		klog.Warningf("Failed to create crd client: %s", err)
-		return nil, err
-	}
-
 	uc := &UpstreamController{
-		crdClient:    crdcli,
-		messageLayer: messagelayer.NewContextMessageLayer(),
+		crdClient:    keclient.GetCRDClient(),
+		messageLayer: messagelayer.DeviceControllerMessageLayer(),
 		dc:           dc,
 	}
 	return uc, nil
+}
+
+func findOrCreateTwinByName(twinName string, properties []v1beta1.DeviceProperty, deviceStatus *DeviceStatus) *v1beta1.Twin {
+	for i := range properties {
+		if twinName == properties[i].Name {
+			twin := findTwinByName(twinName, deviceStatus)
+			if twin != nil {
+				return twin
+			}
+			twin = &v1beta1.Twin{
+				PropertyName: twinName,
+			}
+			deviceStatus.Status.Twins = append(deviceStatus.Status.Twins, *twin)
+			return twin
+		}
+	}
+	return nil
+}
+
+func findTwinByName(twinName string, deviceStatus *DeviceStatus) *v1beta1.Twin {
+	for i := range deviceStatus.Status.Twins {
+		if twinName == deviceStatus.Status.Twins[i].PropertyName {
+			return &deviceStatus.Status.Twins[i]
+		}
+	}
+	return nil
 }

@@ -1,9 +1,24 @@
-package cmd
+/*
+Copyright 2022 The KubeEdge Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package cloud
 
 import (
 	"context"
 	"fmt"
-	"io"
 
 	"github.com/spf13/cobra"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,22 +42,21 @@ to get the token.
 )
 
 // NewGettoken gets the token for edge nodes to join the cluster
-func NewGettoken(out io.Writer, init *common.GettokenOptions) *cobra.Command {
-	if init == nil {
-		init = newGettokenOptions()
-	}
+func NewGettoken() *cobra.Command {
+	init := newGettokenOptions()
+
 	cmd := &cobra.Command{
 		Use:     "gettoken",
 		Short:   "To get the token for edge nodes to join the cluster",
 		Long:    gettokenLongDescription,
 		Example: gettokenExample,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token, err := queryToken(constants.KubeEdgeNameSpace, common.TokenSecretName, init.Kubeconfig)
+			token, err := queryToken(constants.SystemNamespace, common.TokenSecretName, init.Kubeconfig)
 			if err != nil {
-				fmt.Println("failed to get token")
+				fmt.Printf("failed to get token, err is %s\n", err)
 				return err
 			}
-			return showToken(token, out)
+			return showToken(token)
 		},
 	}
 	addGettokenFlags(cmd, init)
@@ -50,11 +64,11 @@ func NewGettoken(out io.Writer, init *common.GettokenOptions) *cobra.Command {
 }
 
 func addGettokenFlags(cmd *cobra.Command, gettokenOptions *common.GettokenOptions) {
-	cmd.Flags().StringVar(&gettokenOptions.Kubeconfig, common.KubeConfig, gettokenOptions.Kubeconfig,
+	cmd.Flags().StringVar(&gettokenOptions.Kubeconfig, common.FlagNameKubeConfig, gettokenOptions.Kubeconfig,
 		"Use this key to set kube-config path, eg: $HOME/.kube/config")
 }
 
-//
+// newGettokenOptions return common options
 func newGettokenOptions() *common.GettokenOptions {
 	opts := &common.GettokenOptions{}
 	opts.Kubeconfig = common.DefaultKubeConfig
@@ -75,8 +89,8 @@ func queryToken(namespace string, name string, kubeConfigPath string) ([]byte, e
 }
 
 // showToken prints the token
-func showToken(data []byte, out io.Writer) error {
-	_, err := fmt.Fprintln(out, string(data))
+func showToken(data []byte) error {
+	_, err := fmt.Println(string(data))
 	if err != nil {
 		return err
 	}

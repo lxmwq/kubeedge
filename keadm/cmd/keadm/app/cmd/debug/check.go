@@ -5,9 +5,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,10 +16,10 @@ import (
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/mem"
 	"github.com/spf13/cobra"
+	utilruntime "k8s.io/kubernetes/cmd/kubeadm/app/util/runtime"
 
+	"github.com/kubeedge/api/apis/common/constants"
 	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
-	constant "github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
-	types "github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
 	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/util"
 )
 
@@ -31,9 +31,6 @@ and maintenance personnel to locate the problem`
 	edgeCheckExample          = `
         # Check all items .
         keadm debug check all
-
-        # Check whether the node arch is supported .
-        keadm debug check arch
 
         # Check whether the node CPU meets  requirements.
         keadm debug check cpu
@@ -53,30 +50,35 @@ and maintenance personnel to locate the problem`
         # Check whether the number of free processes on the node meets requirements.
         keadm debug check pid
 
-        # Check whether runtime(Docker) is installed on the node.
+        # Check whether the container runtime can work.
         keadm debug check runtime
 `
 )
 
-type CheckObject types.CheckObject
+type CheckObject common.CheckObject
 
-// NewEdgecheck returns KubeEdge edge check command.
-func NewCheck(out io.Writer, collectOptions *types.CheckOptions) *cobra.Command {
+type runtimeStatusChecker interface {
+	Connect() error
+	IsRunning() error
+}
+
+// NewCheck returns KubeEdge edge check command.
+func NewCheck() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "check",
 		Short:   edgeCheckShortDescription,
 		Long:    edgeCheckLongDescription,
 		Example: edgeCheckExample,
 	}
-	for _, v := range constant.CheckObjectMap {
-		cmd.AddCommand(NewSubEdgeCheck(out, CheckObject(v)))
+	for _, v := range common.CheckObjectMap {
+		cmd.AddCommand(NewSubEdgeCheck(CheckObject(v)))
 	}
 	return cmd
 }
 
-// NewEdgecheck returns KubeEdge edge check subcommand.
-func NewSubEdgeCheck(out io.Writer, object CheckObject) *cobra.Command {
-	co := NewCheckOptins()
+// NewSubEdgeCheck returns KubeEdge edge check subcommand.
+func NewSubEdgeCheck(object CheckObject) *cobra.Command {
+	co := NewCheckOptions()
 	cmd := &cobra.Command{
 		Short: object.Desc,
 		Use:   object.Use,
@@ -85,74 +87,73 @@ func NewSubEdgeCheck(out io.Writer, object CheckObject) *cobra.Command {
 		},
 	}
 	switch object.Use {
-	case constant.ArgCheckAll:
+	case common.ArgCheckAll:
 		cmd.Flags().StringVarP(&co.Domain, "domain", "d", co.Domain, "specify test domain")
 		cmd.Flags().StringVarP(&co.IP, "ip", "i", co.IP, "specify test ip")
 		cmd.Flags().StringVarP(&co.CloudHubServer, "cloud-hub-server", "s", co.CloudHubServer, "specify cloudhub server")
-		cmd.Flags().StringVarP(&co.Runtime, "runtime", "r", co.Runtime, "specify test runtime")
 		cmd.Flags().StringVarP(&co.DNSIP, "dns-ip", "D", co.DNSIP, "specify test dns ip")
-		cmd.Flags().StringVarP(&co.Config, constant.EdgecoreConfig, "c", co.Config,
-			fmt.Sprintf("Specify configuration file, defalut is %s", common.EdgecoreConfigPath))
-	case constant.ArgCheckDNS:
+		cmd.Flags().StringVarP(&co.Config, common.EdgecoreConfig, "c", co.Config,
+			fmt.Sprintf("Specify configuration file, default is %s", constants.EdgecoreConfigPath))
+	case common.ArgCheckDNS:
 		cmd.Flags().StringVarP(&co.Domain, "domain", "d", co.Domain, "specify test domain")
 		cmd.Flags().StringVarP(&co.DNSIP, "dns-ip", "D", co.DNSIP, "specify test dns ip")
-	case constant.ArgCheckNetwork:
+	case common.ArgCheckNetwork:
 		cmd.Flags().StringVarP(&co.IP, "ip", "i", co.IP, "specify test ip")
 		cmd.Flags().StringVarP(&co.CloudHubServer, "cloud-hub-server", "s", co.CloudHubServer, "specify cloudhub server")
-		cmd.Flags().StringVarP(&co.Config, constant.EdgecoreConfig, "c", co.Config,
-			fmt.Sprintf("Specify configuration file, defalut is %s", common.EdgecoreConfigPath))
-	case constant.ArgCheckRuntime:
-		cmd.Flags().StringVarP(&co.Runtime, "runtime", "r", co.Runtime, "specify test runtime")
+		cmd.Flags().StringVarP(&co.Config, common.EdgecoreConfig, "c", co.Config,
+			fmt.Sprintf("Specify configuration file, default is %s", constants.EdgecoreConfigPath))
+	case common.ArgCheckRuntime:
+		cmd.Flags().StringVarP(&co.Config, common.EdgecoreConfig, "c", co.Config,
+			fmt.Sprintf("Specify configuration file, default is %s", constants.EdgecoreConfigPath))
 	}
 
 	return cmd
 }
 
-// Add flags
-func NewCheckOptins() *types.CheckOptions {
-	co := &types.CheckOptions{}
-	co.Runtime = types.DefaultRuntime
+// NewCheckOptions returns check options
+func NewCheckOptions() *common.CheckOptions {
+	co := &common.CheckOptions{}
 	co.Domain = "www.github.com"
 	co.Timeout = 1
 	return co
 }
 
-// Start to check data
-func (co *CheckObject) ExecuteCheck(use string, ob *types.CheckOptions) {
+// ExecuteCheck starts to check data
+func (co *CheckObject) ExecuteCheck(use string, ob *common.CheckOptions) {
 	err := fmt.Errorf("")
 
 	if ob.Config == "" {
-		ob.Config = types.EdgecoreConfigPath
+		ob.Config = constants.EdgecoreConfigPath
 	}
 
 	switch use {
-	case constant.ArgCheckAll:
+	case common.ArgCheckAll:
 		err = CheckAll(ob)
-	case constant.ArgCheckCPU:
+	case common.ArgCheckCPU:
 		err = CheckCPU()
-	case constant.ArgCheckMemory:
+	case common.ArgCheckMemory:
 		err = CheckMemory()
-	case constant.ArgCheckDisk:
+	case common.ArgCheckDisk:
 		err = CheckDisk()
-	case constant.ArgCheckDNS:
+	case common.ArgCheckDNS:
 		err = CheckDNSSpecify(ob.Domain, ob.DNSIP)
-	case constant.ArgCheckNetwork:
+	case common.ArgCheckNetwork:
 		err = CheckNetWork(ob.IP, ob.Timeout, ob.CloudHubServer, ob.EdgecoreServer, ob.Config)
-	case constant.ArgCheckRuntime:
-		err = CheckRuntime(ob.Runtime)
-	case constant.ArgCheckPID:
+	case common.ArgCheckRuntime:
+		err = CheckRuntime(ob.Config)
+	case common.ArgCheckPID:
 		err = CheckPid()
 	}
 
 	if err != nil {
 		fmt.Println(err)
-		util.PrintFail(use, constant.StrCheck)
+		util.PrintFail(use, common.StrCheck)
 	} else {
-		util.PrintSuccedd(use, constant.StrCheck)
+		util.PrintSucceed(use, common.StrCheck)
 	}
 }
 
-func CheckAll(ob *types.CheckOptions) error {
+func CheckAll(ob *common.CheckOptions) error {
 	err := CheckCPU()
 	if err != nil {
 		return err
@@ -183,7 +184,7 @@ func CheckAll(ob *types.CheckOptions) error {
 		return err
 	}
 
-	err = CheckRuntime(ob.Runtime)
+	err = CheckRuntime(ob.Config)
 	if err != nil {
 		return err
 	}
@@ -201,29 +202,29 @@ func CheckCPU() error {
 		return err
 	}
 
-	fmt.Printf("CPU total: %v core, Allowed > %v core\n", cpuNum, constant.AllowedValueCPU)
-	fmt.Printf("CPU usage rate: %.2f, Allowed rate < %v\n", percent[0]/100, constant.AllowedCurrentValueCPURate)
+	fmt.Printf("CPU total: %v core, Allowed > %v core\n", cpuNum, common.AllowedValueCPU)
+	fmt.Printf("CPU usage rate: %.2f, Allowed rate < %v\n", percent[0]/100, common.AllowedCurrentValueCPURate)
 
-	if cpuNum < constant.AllowedValueCPU || percent[0]/100 > constant.AllowedCurrentValueCPURate {
+	if cpuNum < common.AllowedValueCPU || percent[0]/100 > common.AllowedCurrentValueCPURate {
 		return errors.New("cpu check failed")
 	}
 	return nil
 }
 
 func CheckMemory() error {
-	mem, err := mem.VirtualMemory()
+	memoryInfo, err := mem.VirtualMemory()
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Memory total: %.2f MB, Allowed > %v MB\n", float32(mem.Total)/constant.MB, constant.AllowedValueMemory/constant.MB)
-	fmt.Printf("Memory Free total: %.2f MB, Allowed > %v MB\n", float32(mem.Free)/constant.MB, constant.AllowedCurrentValueMem/constant.MB)
-	fmt.Printf("Memory usage rate: %.2f, Allowed rate < %v\n", mem.UsedPercent/100,
-		constant.AllowedCurrentValueMemRate)
+	fmt.Printf("Memory total: %.2f MB, Allowed > %v MB\n", float32(memoryInfo.Total)/common.MB, common.AllowedValueMemory/common.MB)
+	fmt.Printf("Memory Free total: %.2f MB, Allowed > %v MB\n", float32(memoryInfo.Free)/common.MB, common.AllowedCurrentValueMem/common.MB)
+	fmt.Printf("Memory usage rate: %.2f, Allowed rate < %v\n", memoryInfo.UsedPercent/100,
+		common.AllowedCurrentValueMemRate)
 
-	if mem.Total < constant.AllowedValueMemory ||
-		mem.Free < constant.AllowedCurrentValueMem ||
-		mem.UsedPercent/100 > constant.AllowedCurrentValueMemRate {
+	if memoryInfo.Total < common.AllowedValueMemory ||
+		memoryInfo.Free < common.AllowedCurrentValueMem ||
+		memoryInfo.UsedPercent/100 > common.AllowedCurrentValueMemRate {
 		return errors.New("memory check failed")
 	}
 
@@ -241,13 +242,13 @@ func CheckDisk() error {
 		return err
 	}
 
-	fmt.Printf("Disk total: %.2f MB, Allowed > %v MB\n", float32(diskInfo.Total)/constant.MB, constant.AllowedValueDisk/constant.MB)
-	fmt.Printf("Disk Free total: %.2f MB, Allowed > %vMB\n", float32(diskInfo.Free)/constant.MB, constant.AllowedCurrentValueDisk/constant.MB)
-	fmt.Printf("Disk usage rate: %.2f, Allowed rate < %v\n", diskInfo.UsedPercent/100, constant.AllowedCurrentValueDiskRate)
+	fmt.Printf("Disk total: %.2f MB, Allowed > %v MB\n", float32(diskInfo.Total)/common.MB, common.AllowedValueDisk/common.MB)
+	fmt.Printf("Disk Free total: %.2f MB, Allowed > %vMB\n", float32(diskInfo.Free)/common.MB, common.AllowedCurrentValueDisk/common.MB)
+	fmt.Printf("Disk usage rate: %.2f, Allowed rate < %v\n", diskInfo.UsedPercent/100, common.AllowedCurrentValueDiskRate)
 
-	if diskInfo.Total < constant.AllowedValueDisk ||
-		diskInfo.Free < constant.AllowedCurrentValueDisk ||
-		diskInfo.UsedPercent/100 > constant.AllowedCurrentValueDiskRate {
+	if diskInfo.Total < common.AllowedValueDisk ||
+		diskInfo.Free < common.AllowedCurrentValueDisk ||
+		diskInfo.UsedPercent/100 > common.AllowedCurrentValueDiskRate {
 		return errors.New("disk check failed")
 	}
 
@@ -284,29 +285,28 @@ func CheckDNSSpecify(domain string, dns string) error {
 
 func CheckNetWork(IP string, timeout int, cloudhubServer string, edgecoreServer string, config string) error {
 	if edgecoreServer == "" {
-		edgecoreServer = "127.0.0.1:10350"
+		edgecoreServer = common.EdgeCoreServer
 	}
 
 	if config != "" {
-		edgeconfig, err := util.ParseEdgecoreConfig(config)
+		edgeConfig, err := util.ParseEdgecoreConfig(config)
 		if err != nil {
-			err = fmt.Errorf("parse Edgecore config failed")
-		} else {
-			if cloudhubServer == "" {
-				cloudhubServer = edgeconfig.Modules.EdgeHub.WebSocket.Server
-			}
+			return fmt.Errorf("parse Edgecore config failed")
+		}
+		if cloudhubServer == "" {
+			cloudhubServer = edgeConfig.Modules.EdgeHub.WebSocket.Server
 		}
 	}
 
 	if IP == "" {
-		result, err := util.ExecShellFilter(constant.CmdGetDNSIP)
+		result, err := util.ExecShellFilter(common.CmdGetDNSIP)
 		if err != nil {
 			return err
 		}
 		IP = result
 	}
 	if IP != "" {
-		result, err := util.ExecShellFilter(fmt.Sprintf(constant.CmdPing, IP, timeout))
+		result, err := util.ExecShellFilter(fmt.Sprintf(common.CmdPing, IP, timeout))
 
 		if err != nil {
 			return err
@@ -328,7 +328,7 @@ func CheckNetWork(IP string, timeout int, cloudhubServer string, edgecoreServer 
 	if edgecoreServer != "" {
 		err := CheckHTTP("http://" + edgecoreServer)
 		if err != nil {
-			return fmt.Errorf("check edgecoreServer %s failed, %v", edgecoreServer, edgecoreServer)
+			return fmt.Errorf("check edgecoreServer %s failed, %v", edgecoreServer, err)
 		}
 		fmt.Printf("check edgecoreServer %s success\n", edgecoreServer)
 	}
@@ -352,35 +352,68 @@ func CheckHTTP(url string) error {
 	return nil
 }
 
-func CheckRuntime(runtime string) error {
-	if runtime == types.DefaultRuntime {
-		result, err := util.ExecShellFilter(constant.CmdGetStatusDocker)
-		if err != nil {
-			return err
-		}
-		if result != "active" {
-			return fmt.Errorf("docker is not running: %s", result)
-		}
-		fmt.Printf("docker is running\n")
-		return nil
-	}
-	return fmt.Errorf("now only support docker: %s", runtime)
-	// TODO
-}
-
-func CheckPid() error {
-	rMax, err := util.ExecShellFilter(constant.CmdGetMaxProcessNum)
+func CheckRuntime(config string) error {
+	endpoint, err := getRuntimeEndpoint(config)
 	if err != nil {
 		return err
 	}
-	r, err := util.ExecShellFilter(constant.CmdGetProcessNum)
+	return checkRuntimeEndpoint(endpoint, utilruntime.NewContainerRuntime(endpoint))
+}
+
+func checkRuntimeEndpoint(endpoint string, containerRuntime runtimeStatusChecker) error {
+	if err := containerRuntime.Connect(); err != nil {
+		return fmt.Errorf("could not connect to the container runtime: %v", err)
+	}
+
+	if err := containerRuntime.IsRunning(); err != nil {
+		return err
+	}
+	fmt.Printf("check runtime endpoint %s success\n", endpoint)
+	return nil
+}
+
+func getRuntimeEndpoint(config string) (string, error) {
+	endpoint := constants.DefaultRemoteRuntimeEndpoint
+	if config == "" {
+		return endpoint, nil
+	}
+
+	if _, err := os.Stat(config); err != nil {
+		if os.IsNotExist(err) {
+			if config == constants.EdgecoreConfigPath {
+				return endpoint, nil
+			}
+			return "", fmt.Errorf("edgecore config %s does not exist", config)
+		}
+		return "", fmt.Errorf("stat edgecore config %s failed: %v", config, err)
+	}
+
+	edgeConfig, err := util.ParseEdgecoreConfig(config)
+	if err != nil {
+		return "", fmt.Errorf("parse Edgecore config failed: %w", err)
+	}
+	if edgeConfig.Modules == nil || edgeConfig.Modules.Edged == nil || edgeConfig.Modules.Edged.TailoredKubeletConfig == nil {
+		return endpoint, nil
+	}
+	if edgeConfig.Modules.Edged.TailoredKubeletConfig.ContainerRuntimeEndpoint != "" {
+		endpoint = edgeConfig.Modules.Edged.TailoredKubeletConfig.ContainerRuntimeEndpoint
+	}
+	return endpoint, nil
+}
+
+func CheckPid() error {
+	rMax, err := util.ExecShellFilter(common.CmdGetMaxProcessNum)
+	if err != nil {
+		return err
+	}
+	r, err := util.ExecShellFilter(common.CmdGetProcessNum)
 	if err != nil {
 		return err
 	}
 	vMax, err := strconv.ParseFloat(rMax, 32)
 	v, err := strconv.ParseFloat(r, 32)
 	rate := (1 - v/vMax)
-	if rate > constant.AllowedValuePIDRate {
+	if rate > common.AllowedValuePIDRate {
 		fmt.Printf("Maximum PIDs: %s; Running processes: %s\n", rMax, r)
 		return nil
 	}

@@ -20,8 +20,10 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	commonconst "github.com/kubeedge/kubeedge/common/constants"
 )
 
 var (
@@ -202,6 +204,110 @@ func TestDeleteSecret(t *testing.T) {
 			test.lc.DeleteSecret(test.namespace, test.secretName)
 			if _, got := test.lc.secretNode.Load(secretKey); !reflect.DeepEqual(got, test.errorWant) {
 				t.Errorf("Manager.TestDeleteSecret() case failed: got = %v, Want = %v", got, test.errorWant)
+			}
+		})
+	}
+}
+
+// TestIsEdgeNode is function to test IsEdgeNode
+func TestIsEdgeNode(t *testing.T) {
+	nodeName := nodes[0]
+	locationCache := LocationCache{}
+	locationCache.EdgeNodes.Store(nodeName, commonconst.MessageSuccessfulContent)
+
+	tests := []struct {
+		name     string
+		lc       *LocationCache
+		nodeName string
+		want     bool
+	}{
+		{
+			name:     "TestIsEdgeNode() Case: Node is edgenode",
+			lc:       &locationCache,
+			nodeName: nodeName,
+			want:     true,
+		},
+		{
+			name:     "TestIsEdgeNode() Case: Node is not edgenode",
+			lc:       &locationCache,
+			nodeName: "notExistNode",
+			want:     false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.lc.IsEdgeNode(test.nodeName); !reflect.DeepEqual(got, test.want) {
+				t.Errorf("Manager.TestIsEdgeNode() case failed: got = %v, want = %v", got, test.want)
+			}
+		})
+	}
+}
+
+// TestUpdateEdgeNode is function to test UpdateEdgeNode
+func TestUpdateEdgeNode(t *testing.T) {
+	locationCache := LocationCache{}
+	nodeName := nodes[0]
+	locationCache.EdgeNodes.Store(nodeName, "")
+
+	tests := []struct {
+		name string
+		lc   *LocationCache
+		want bool
+	}{
+		{
+			name: "TestUpdateEdgeNode() Case: Node status update to OK",
+			lc:   &locationCache,
+			want: true,
+		},
+		{
+			name: "TestUpdateEdgeNode() Case: Node status update to Unknown",
+			lc:   &locationCache,
+			want: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.lc.UpdateEdgeNode(nodeName)
+			if _, ok := test.lc.EdgeNodes.Load(nodeName); !ok {
+				t.Errorf("Manager.TestUpdateEdgeNode() case failed: got = %v, want = %v.", ok, test.want)
+			}
+		})
+	}
+}
+
+// TestDeleteNode is function to test DeleteNode
+func TestDeleteNode(t *testing.T) {
+	locationCache := LocationCache{}
+	nodeName := nodes[0]
+	locationCache.EdgeNodes.Store(nodeName, commonconst.MessageSuccessfulContent)
+
+	tests := []struct {
+		name     string
+		lc       *LocationCache
+		nodeName string
+		want     bool
+	}{
+		{
+			name:     "TestDeleteNode() Case: Delete exist node",
+			lc:       &locationCache,
+			nodeName: nodeName,
+			want:     false,
+		},
+		{
+			name:     "TestDeleteNode() Case: Delete not exist node",
+			lc:       &locationCache,
+			nodeName: "notExistNode",
+			want:     false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.lc.DeleteNode(test.nodeName)
+			if _, exist := test.lc.EdgeNodes.Load(test.nodeName); !reflect.DeepEqual(exist, test.want) {
+				t.Errorf("Manager.TestDeleteNode() case failed: exist = %v, want = %v.", exist, test.want)
 			}
 		})
 	}

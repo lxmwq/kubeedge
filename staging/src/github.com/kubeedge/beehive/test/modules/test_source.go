@@ -9,7 +9,7 @@ import (
 	"github.com/kubeedge/beehive/pkg/core/model"
 )
 
-//Constants for module source and group
+// Constants for module source and group
 const (
 	SourceModule = "sourcemodule"
 	SourceGroup  = "sourcegroup"
@@ -51,4 +51,8 @@ func (m *testModuleSource) Start() {
 	message = model.NewMessage("").SetRoute(SourceModule, DestinationGroup).
 		SetResourceOperation("test", model.DeleteOperation).FillBody("fine")
 	beehiveContext.SendToGroup(DestinationGroup, *message)
+}
+
+func (m *testModuleSource) RestartPolicy() *core.ModuleRestartPolicy {
+	return nil
 }

@@ -3,13 +3,11 @@ package test
 import (
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"net/http"
 
-	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"k8s.io/api/core/v1"
-	"k8s.io/klog"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/beehive/pkg/core"
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
@@ -31,6 +29,8 @@ type stubCloudHub struct {
 	enable bool
 }
 
+var _ core.Module = (*stubCloudHub)(nil)
+
 func (*stubCloudHub) Name() string {
 	return "stubCloudHub"
 }
@@ -44,7 +44,11 @@ func (tm *stubCloudHub) Enable() bool {
 	return tm.enable
 }
 
-func (tm *stubCloudHub) eventReadLoop(conn *websocket.Conn, stop chan bool) {
+func (tm *stubCloudHub) RestartPolicy() *core.ModuleRestartPolicy {
+	return nil
+}
+
+func (*stubCloudHub) eventReadLoop(conn *websocket.Conn, stop chan bool) {
 	for {
 		var event interface{}
 		err := conn.ReadJSON(&event)
@@ -76,10 +80,12 @@ func (tm *stubCloudHub) serveEvent(w http.ResponseWriter, r *http.Request) {
 
 func (tm *stubCloudHub) podHandler(w http.ResponseWriter, req *http.Request) {
 	if req.Body != nil {
-		body, err := ioutil.ReadAll(req.Body)
+		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			klog.Errorf("read body error %v", err)
-			w.Write([]byte("read request body error"))
+			if _, err := w.Write([]byte("read request body error")); err != nil {
+				klog.Error(err)
+			}
 			return
 		}
 		klog.Infof("request body is %s\n", string(body))
@@ -87,38 +93,43 @@ func (tm *stubCloudHub) podHandler(w http.ResponseWriter, req *http.Request) {
 		var pod v1.Pod
 		if err = json.Unmarshal(body, &pod); err != nil {
 			klog.Errorf("unmarshal request body error %v", err)
-			w.Write([]byte("unmarshal request body error"))
+			if _, err := w.Write([]byte("unmarshal request body error")); err != nil {
+				klog.Error(err)
+			}
 			return
 		}
 		var msgReq *model.Message
 		switch req.Method {
-		case "POST":
+		case http.MethodPost:
 			msgReq = model.NewMessage("").BuildRouter("edgecontroller", "resource",
 				"node/fake_node_id/pod/"+string(pod.UID), model.InsertOperation).FillBody(pod)
-		case "DELETE":
+		case http.MethodDelete:
 			msgReq = model.NewMessage("").BuildRouter("edgecontroller", "resource",
 				"node/fake_node_id/pod/"+string(pod.UID), model.DeleteOperation).FillBody(pod)
 		}
 
 		if tm.wsConn != nil {
-			tm.wsConn.WriteJSON(*msgReq)
+			if err := tm.wsConn.WriteJSON(*msgReq); err != nil {
+				klog.Error(err)
+			}
 			klog.Infof("send message to edgehub is %+v\n", *msgReq)
 		}
 
-		io.WriteString(w, "OK\n")
+		if _, err := io.WriteString(w, "OK\n"); err != nil {
+			klog.Error(err)
+		}
 	}
 }
 
 func (tm *stubCloudHub) Start() {
 	defer tm.Cleanup()
 
-	router := mux.NewRouter()
-	router.HandleFunc("/{group_id}/events", tm.serveEvent) // for edge-hub
-	router.HandleFunc("/pod", tm.podHandler)               // for pod test
-
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{group_id}/events", tm.serveEvent) // for edge-hub
+	mux.HandleFunc("/pod", tm.podHandler)               // for pod test
 	s := http.Server{
 		Addr:    "127.0.0.1:20000",
-		Handler: router,
+		Handler: mux,
 	}
 	klog.Info("Start cloud hub service")
 	err := s.ListenAndServe()

@@ -19,17 +19,21 @@ package dtmanager
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
-
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/assert"
+	"time"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/kubeedge/edge/mocks/beego"
-	"github.com/kubeedge/kubeedge/edge/pkg/common/dbm"
+	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcommon"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcontext"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dttype"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/mocks"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/models"
+)
+
+var (
+	originalMembershipServiceFactory = MembershipServiceFactory
 )
 
 func TestGetRemoveList(t *testing.T) {
@@ -46,7 +50,9 @@ func TestGetRemoveList(t *testing.T) {
 	dArray = append(dArray, d)
 	value := getRemoveList(dtc, dArray)
 	for i := range value {
-		assert.Equal(t, "DeviceB", value[i].ID)
+		if value[i].ID != "DeviceB" {
+			t.Errorf("expected %v, but got %v", "DeviceB", value[i].ID)
+		}
 	}
 }
 
@@ -63,7 +69,9 @@ func TestGetRemoveListProperDevideID(t *testing.T) {
 	dArray = append(dArray, d)
 	value := getRemoveList(dtc, dArray)
 	for i := range value {
-		assert.Equal(t, "123", value[i].ID)
+		if value[i].ID != "123" {
+			t.Errorf("expected %v, but got %v", "123", value[i].ID)
+		}
 	}
 }
 
@@ -72,9 +80,10 @@ func TestDealMembershipDetailInvalidEmptyMessage(t *testing.T) {
 		DeviceList: &sync.Map{},
 		GroupID:    "1",
 	}
-	value, err := dealMembershipDetail(dtc, "t", "invalid")
-	assert.Error(t, err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipDetail(dtc, "t", "invalid")
+	if err == nil {
+		t.Errorf("expected error, but got nil")
+	}
 }
 
 func TestDealMembershipDetailInvalidMsg(t *testing.T) {
@@ -87,10 +96,10 @@ func TestDealMembershipDetailInvalidMsg(t *testing.T) {
 		Content: "invalidmsg",
 	}
 
-	value, err := dealMembershipDetail(dtc, "t", m)
-	assert.Error(t, err)
-	assert.Equal(t, errors.New("assertion failed"), err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipDetail(dtc, "t", m)
+	if !reflect.DeepEqual(err, errors.New("assertion failed")) {
+		t.Errorf("expected %v, but got %v", errors.New("assertion failed"), err)
+	}
 }
 
 func TestDealMembershipDetailInvalidContent(t *testing.T) {
@@ -104,9 +113,10 @@ func TestDealMembershipDetailInvalidContent(t *testing.T) {
 		Content: cnt,
 	}
 
-	value, err := dealMembershipDetail(dtc, "t", m)
-	assert.Error(t, err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipDetail(dtc, "t", m)
+	if err == nil {
+		t.Errorf("expected error, but got nil")
+	}
 }
 
 func TestDealMembershipDetailValid(t *testing.T) {
@@ -122,9 +132,10 @@ func TestDealMembershipDetailValid(t *testing.T) {
 	var m = &model.Message{
 		Content: content,
 	}
-	value, err := dealMembershipDetail(dtc, "t", m)
-	assert.NoError(t, err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipDetail(dtc, "t", m)
+	if err != nil {
+		t.Errorf("expected nil, but got error: %v", err)
+	}
 }
 
 func TestDealMembershipUpdateEmptyMessage(t *testing.T) {
@@ -132,10 +143,10 @@ func TestDealMembershipUpdateEmptyMessage(t *testing.T) {
 		DeviceList: &sync.Map{},
 		GroupID:    "1",
 	}
-	value, err := dealMembershipDetail(dtc, "t", "invalid")
-	assert.Error(t, err)
-	assert.Equal(t, errors.New("msg not Message type"), err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipDetail(dtc, "t", "invalid")
+	if !reflect.DeepEqual(err, errors.New("msg not Message type")) {
+		t.Errorf("expected %v, but got %v", errors.New("msg not Message type"), err)
+	}
 }
 
 func TestDealMembershipUpdateInvalidMsg(t *testing.T) {
@@ -148,10 +159,10 @@ func TestDealMembershipUpdateInvalidMsg(t *testing.T) {
 		Content: "invalidmessage",
 	}
 
-	value, err := dealMembershipUpdate(dtc, "t", m)
-	assert.Error(t, err)
-	assert.Equal(t, errors.New("assertion failed"), err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipUpdate(dtc, "t", m)
+	if !reflect.DeepEqual(err, errors.New("assertion failed")) {
+		t.Errorf("expected %v, but got %v", errors.New("assertion failed"), err)
+	}
 }
 func TestDealMembershipUpdateInvalidContent(t *testing.T) {
 	dtc := &dtcontext.DTContext{
@@ -165,22 +176,16 @@ func TestDealMembershipUpdateInvalidContent(t *testing.T) {
 		Content: cnt,
 	}
 
-	value, err := dealMembershipUpdate(dtc, "t", m)
-	assert.Error(t, err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipUpdate(dtc, "t", m)
+	if err == nil {
+		t.Errorf("expected error, but got nil")
+	}
 }
 
 func TestDealMembershipUpdateValidAddedDevice(t *testing.T) {
-	var ormerMock *beego.MockOrmer
-
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
-	ormerMock = beego.NewMockOrmer(mockCtrl)
-	dbm.DBAccess = ormerMock
-
-	ormerMock.EXPECT().Begin().Return(nil)
-	ormerMock.EXPECT().Insert(gomock.Any()).Return(int64(1), nil).Times(1)
-	ormerMock.EXPECT().Commit().Return(nil)
+	defer func() {
+		MembershipServiceFactory = originalMembershipServiceFactory
+	}()
 
 	dtc := &dtcontext.DTContext{
 		DeviceList:  &sync.Map{},
@@ -205,12 +210,34 @@ func TestDealMembershipUpdateValidAddedDevice(t *testing.T) {
 	var m = &model.Message{
 		Content: content,
 	}
-	value, err := dealMembershipUpdate(dtc, "t", m)
-	assert.NoError(t, err)
-	assert.Equal(t, nil, value)
+
+	// Setup mock
+	mockService := mocks.NewMockDeviceService()
+	mockService.AddDeviceTransFunc = func(adds []models.Device, addAttrs []models.DeviceAttr, addTwins []models.DeviceTwin) error {
+		return nil
+	}
+
+	MembershipServiceFactory = func() interface {
+		AddDeviceTrans(adds []models.Device, addAttrs []models.DeviceAttr, addTwins []models.DeviceTwin) error
+		DeleteDeviceTrans(deletes []string) error
+		QueryDevice(key string, condition string) ([]models.Device, error)
+		QueryDeviceAttr(key, condition string) (*[]models.DeviceAttr, error)
+		QueryDeviceTwin(key, condition string) (*[]models.DeviceTwin, error)
+	} {
+		return mockService
+	}
+
+	err := dealMembershipUpdate(dtc, "t", m)
+	if err != nil {
+		t.Errorf("expected nil, but got error: %v", err)
+	}
 }
 
 func TestDealMembershipUpdateValidRemovedDevice(t *testing.T) {
+	defer func() {
+		MembershipServiceFactory = originalMembershipServiceFactory
+	}()
+
 	dtc := &dtcontext.DTContext{
 		DeviceList:  &sync.Map{},
 		DeviceMutex: &sync.Map{},
@@ -234,9 +261,10 @@ func TestDealMembershipUpdateValidRemovedDevice(t *testing.T) {
 	var m = &model.Message{
 		Content: content,
 	}
-	value, err := dealMembershipUpdate(dtc, "t", m)
-	assert.NoError(t, err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipUpdate(dtc, "t", m)
+	if err != nil {
+		t.Errorf("expected nil, but got error: %v", err)
+	}
 }
 
 func TestDealMembershipGetEmptyMsg(t *testing.T) {
@@ -244,10 +272,10 @@ func TestDealMembershipGetEmptyMsg(t *testing.T) {
 		DeviceList: &sync.Map{},
 		GroupID:    "1",
 	}
-	value, err := dealMembershipGet(dtc, "t", "invalid")
-	assert.Error(t, err)
-	assert.Equal(t, errors.New("msg not Message type"), err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipGet(dtc, "t", "invalid")
+	if !reflect.DeepEqual(err, errors.New("msg not Message type")) {
+		t.Errorf("expected %v, but got %v", errors.New("msg not Message type"), err)
+	}
 }
 
 func TestDealMembershipGetInvalidMsg(t *testing.T) {
@@ -260,10 +288,10 @@ func TestDealMembershipGetInvalidMsg(t *testing.T) {
 		Content: "hello",
 	}
 
-	value, err := dealMembershipGet(dtc, "t", m)
-	assert.Error(t, err)
-	assert.Equal(t, errors.New("assertion failed"), err)
-	assert.Equal(t, nil, value)
+	err := dealMembershipGet(dtc, "t", m)
+	if !reflect.DeepEqual(err, errors.New("assertion failed")) {
+		t.Errorf("expected %v, but got %v", errors.New("assertion failed"), err)
+	}
 }
 
 func TestDealMembershipGetValid(t *testing.T) {
@@ -290,8 +318,10 @@ func TestDealMembershipGetValid(t *testing.T) {
 	var m = &model.Message{
 		Content: content,
 	}
-	_, err := dealMembershipGet(dtc, "t", m)
-	assert.NoError(t, err)
+	err := dealMembershipGet(dtc, "t", m)
+	if !reflect.DeepEqual(err, errors.New("Not found chan to communicate")) {
+		t.Errorf("expected %v, but got error: %v", errors.New("Not found chan to communicate"), err)
+	}
 }
 
 func TestDealMembershipGetInnerValid(t *testing.T) {
@@ -317,7 +347,9 @@ func TestDealMembershipGetInnerValid(t *testing.T) {
 	content, _ := json.Marshal(payload)
 
 	err := dealMembershipGetInner(dtc, content)
-	assert.NoError(t, err)
+	if !reflect.DeepEqual(err, errors.New("Not found chan to communicate")) {
+		t.Errorf("expected %v, but got error: %v", errors.New("Not found chan to communicate"), err)
+	}
 }
 
 func TestDealMembershipGetInnerInValid(t *testing.T) {
@@ -329,54 +361,177 @@ func TestDealMembershipGetInnerInValid(t *testing.T) {
 	}
 
 	err := dealMembershipGetInner(dtc, []byte("invalid"))
-	assert.NoError(t, err)
+	if !reflect.DeepEqual(err, errors.New("Not found chan to communicate")) {
+		t.Errorf("expected %v, but got error: %v", errors.New("Not found chan to communicate"), err)
+	}
 }
 
-//Commented As we are not considering about the coverage incase for coverage we can uncomment below cases.
-/*
-func TestAdded(t *testing.T) {
+func TestMemWorkerStart(t *testing.T) {
+	// Define a constant for sleep duration
+	const processingDelay = 100 * time.Millisecond
+
+	dtc, err := dtcontext.InitDTContext()
+	if err != nil {
+		t.Fatalf("Failed to initialize DTContext: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		message *dttype.DTMessage
+	}{
+		{
+			name: "TestValidMemGet",
+			message: &dttype.DTMessage{
+				Action:   dtcommon.MemGet,
+				Identity: "node1",
+				Msg: &model.Message{
+					Content: []byte(`{"event_id":"1"}`),
+				},
+			},
+		},
+		{
+			name: "TestInvalidAction",
+			message: &dttype.DTMessage{
+				Action:   "invalid",
+				Identity: "node1",
+				Msg: &model.Message{
+					Content: []byte(`{"event_id":"1"}`),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receiverChan := make(chan interface{}, 1)
+			heartBeatChan := make(chan interface{}, 1)
+
+			worker := MemWorker{
+				Worker: Worker{
+					ReceiverChan:  receiverChan,
+					HeartBeatChan: heartBeatChan,
+					DTContexts:    dtc,
+				},
+				Group: "testGroup",
+			}
+
+			// Start worker in goroutine
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				worker.Start()
+			}()
+
+			// Send test message
+			receiverChan <- tt.message
+
+			// Send heartbeat
+			heartBeatChan <- "ping"
+
+			// Allow time for processing using the constant
+			time.Sleep(processingDelay)
+
+			// Cleanup
+			close(receiverChan)
+			close(heartBeatChan)
+
+			// Wait for worker to finish
+			<-done
+		})
+	}
+}
+
+func TestInitMemActionCallBack(t *testing.T) {
+	initMemActionCallBack()
+
+	expectedActions := []string{dtcommon.MemGet, dtcommon.MemUpdated, dtcommon.MemDetailResult}
+	for _, action := range expectedActions {
+		if _, exists := memActionCallBack[action]; !exists {
+			t.Errorf("Expected callback for action %s not found", action)
+		}
+	}
+}
+func TestDealMembershipUpdate(t *testing.T) {
+	defer func() {
+		MembershipServiceFactory = originalMembershipServiceFactory
+	}()
+
 	dtc := &dtcontext.DTContext{
 		DeviceList:  &sync.Map{},
 		DeviceMutex: &sync.Map{},
-		Mutex:       &sync.Mutex{},
-		GroupID:     "1",
+		Mutex:       &sync.RWMutex{},
+		CommChan:    make(map[string]chan interface{}),
+		NodeName:    "test-node",
 	}
-	var d = []dttype.Device{{
-		ID:    "DeviceA",
-		Name:  "Router",
-		State: "unknown",
-	}}
-	var b = dttype.BaseMessage{
-		EventID: "eventid",
+
+	validDevice := dttype.Device{
+		ID:    "device1",
+		Name:  "test device",
+		State: "online",
+		Attributes: map[string]*dttype.MsgAttr{
+			"attr1": {
+				Value:    "value1",
+				Optional: nil,
+				Metadata: &dttype.TypeMetadata{Type: "string"},
+			},
+		},
 	}
-	Added(dtc, d, b, true)
+
+	tests := []struct {
+		name      string
+		update    dttype.MembershipUpdate
+		setupMock func(*mocks.MockDeviceService)
+		wantErr   bool
+	}{
+		{
+			name: "valid remove device",
+			update: dttype.MembershipUpdate{
+				BaseMessage: dttype.BaseMessage{
+					EventID: "test-event",
+				},
+				RemoveDevices: []dttype.Device{validDevice},
+			},
+			setupMock: func(m *mocks.MockDeviceService) {
+				m.DeleteDeviceTransFunc = func(deletes []string) error {
+					return nil
+				}
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup mock
+			mockService := mocks.NewMockDeviceService()
+			tt.setupMock(mockService)
+
+			MembershipServiceFactory = func() interface {
+				AddDeviceTrans(adds []models.Device, addAttrs []models.DeviceAttr, addTwins []models.DeviceTwin) error
+				DeleteDeviceTrans(deletes []string) error
+				QueryDevice(key string, condition string) ([]models.Device, error)
+				QueryDeviceAttr(key, condition string) (*[]models.DeviceAttr, error)
+				QueryDeviceTwin(key, condition string) (*[]models.DeviceTwin, error)
+			} {
+				return mockService
+			}
+
+			// First add device to context
+			dtc.DeviceList.Store("device1", &validDevice)
+
+			content, err := json.Marshal(tt.update)
+			if err != nil {
+				t.Fatalf("Failed to marshal test content: %v", err)
+			}
+
+			msg := &model.Message{
+				Content: content,
+			}
+
+			err = dealMembershipUpdate(dtc, "test", msg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("dealMembershipUpdate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }
-func TestRemoved(t *testing.T) {
-	ormerMock.EXPECT().Begin().Return(nil).Times(1)
-	ormerMock.EXPECT().Rollback().Return(nil).Times(0)
-	ormerMock.EXPECT().Commit().Return(nil).Times(1)
-	querySeterMock.EXPECT().Filter(gomock.Any(), gomock.Any()).Return(querySeterMock).Times(3)
-	ormerMock.EXPECT().QueryTable(gomock.Any()).Return(querySeterMock).Times(3)
-	// success delete
-	querySeterMock.EXPECT().Delete().Return(int64(1), nil).Times(3)
-	// fail delete
-	querySeterMock.EXPECT().Delete().Return(int64(1), errors.New("failed to delete")).Times(0)
-	dtc := &dtcontext.DTContext{
-		DeviceList:  &sync.Map{},
-		DeviceMutex: &sync.Map{},
-		Mutex:       &sync.Mutex{},
-		GroupID:     "1",
-	}
-	var device dttype.Device
-	dtc.DeviceList.Store("DeviceA", &device)
-	var d = []dttype.Device{{
-		ID:    "DeviceA",
-		Name:  "Router",
-		State: "unknown",
-	}}
-	var b = dttype.BaseMessage{
-		EventID: "eventid",
-	}
-	Removed(dtc, d, b, true)
-}
-*/

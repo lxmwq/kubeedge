@@ -23,4 +23,6 @@ set -o pipefail
 KUBEEDGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 source "${KUBEEDGE_ROOT}/hack/lib/init.sh"
 
+kubeedge::golang::setup_env
+export GOWORK=off
 kubeedge::golang::small_build_place_binaries "$@"

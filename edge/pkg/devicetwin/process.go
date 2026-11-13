@@ -4,19 +4,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtclient"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcommon"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcontext"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtmodule"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dttype"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/dbclient"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/models"
 )
 
 var (
@@ -24,9 +26,20 @@ var (
 	EventActionMap map[string]map[string]string
 	//ActionModuleMap map for action to module
 	ActionModuleMap map[string]string
+
+	// DeviceServiceFactory is a function variable that can be mocked in tests
+	// By default it creates a real DeviceService, but tests can replace it with a mock
+	DeviceServiceFactory = func() interface {
+		QueryDeviceAll() ([]models.Device, error)
+		QueryDevice(key string, condition string) ([]models.Device, error)
+		QueryDeviceAttr(key, condition string) (*[]models.DeviceAttr, error)
+		QueryDeviceTwin(key, condition string) (*[]models.DeviceTwin, error)
+	} {
+		return dbclient.NewDeviceService()
+	}
 )
 
-//RegisterDTModule register dtmodule
+// RegisterDTModule register dtmodule
 func (dt *DeviceTwin) RegisterDTModule(name string) {
 	module := dtmodule.DTModule{
 		Name: name,
@@ -39,24 +52,27 @@ func (dt *DeviceTwin) RegisterDTModule(name string) {
 	dt.DTModules[name] = module
 }
 
-//distributeMsg distribute message to diff module
+// distributeMsg distribute message to diff module
 func (dt *DeviceTwin) distributeMsg(m interface{}) error {
 	msg, ok := m.(model.Message)
 	if !ok {
-		klog.Errorf("Distribute message, msg is nil")
-		return errors.New("Distribute message, msg is nil")
+		return errors.New("distribute message, msg is nil")
 	}
+
 	message := dttype.DTMessage{Msg: &msg}
 	if message.Msg.GetParentID() != "" {
 		klog.Infof("Send msg to the %s module in twin", dtcommon.CommModule)
 		confirmMsg := dttype.DTMessage{Msg: model.NewMessage(message.Msg.GetParentID()), Action: dtcommon.Confirm}
 		if err := dt.DTContexts.CommTo(dtcommon.CommModule, &confirmMsg); err != nil {
+			klog.Errorf("fail to send msg %s to CommModule with err: %+v", confirmMsg.Msg.Header.ID, err)
 			return err
 		}
+		return nil
 	}
 	if !classifyMsg(&message) {
-		return errors.New("Not found action")
+		return errors.New("not found action")
 	}
+
 	if ActionModuleMap == nil {
 		initActionModuleMap()
 	}
@@ -68,8 +84,9 @@ func (dt *DeviceTwin) distributeMsg(m interface{}) error {
 			return err
 		}
 	} else {
-		klog.Info("Not found deal module for msg")
-		return errors.New("Not found deal module for msg")
+		err := fmt.Errorf("not found deal module for msg, action: %s", message.Action)
+		klog.Error(err.Error())
+		return err
 	}
 
 	return nil
@@ -106,12 +123,13 @@ func initActionModuleMap() {
 	ActionModuleMap[dtcommon.Disconnected] = dtcommon.CommModule
 	ActionModuleMap[dtcommon.LifeCycle] = dtcommon.CommModule
 	ActionModuleMap[dtcommon.Confirm] = dtcommon.CommModule
+	ActionModuleMap[dtcommon.MetaDeviceOperation] = dtcommon.DMIModule
 }
 
 // SyncSqlite sync sqlite
 func SyncSqlite(context *dtcontext.DTContext) error {
 	klog.Info("Begin to sync sqlite ")
-	rows, queryErr := dtclient.QueryDeviceAll()
+	rows, queryErr := DeviceServiceFactory().QueryDeviceAll()
 	if queryErr != nil {
 		klog.Errorf("Query sqlite failed while syncing sqlite, err: %#v", queryErr)
 		return queryErr
@@ -120,7 +138,7 @@ func SyncSqlite(context *dtcontext.DTContext) error {
 		klog.Info("Query sqlite nil while syncing sqlite")
 		return nil
 	}
-	for _, device := range *rows {
+	for _, device := range rows {
 		err := SyncDeviceFromSqlite(context, device.ID)
 		if err != nil {
 			continue
@@ -129,7 +147,7 @@ func SyncSqlite(context *dtcontext.DTContext) error {
 	return nil
 }
 
-//SyncDeviceFromSqlite sync device from sqlite
+// SyncDeviceFromSqlite sync device from sqlite
 func SyncDeviceFromSqlite(context *dtcontext.DTContext, deviceID string) error {
 	klog.Infof("Sync device detail info from DB of device %s", deviceID)
 	_, exist := context.GetDevice(deviceID)
@@ -141,30 +159,30 @@ func SyncDeviceFromSqlite(context *dtcontext.DTContext, deviceID string) error {
 	defer context.Unlock(deviceID)
 	context.Lock(deviceID)
 
-	devices, err := dtclient.QueryDevice("id", deviceID)
+	devices, err := DeviceServiceFactory().QueryDevice("id", deviceID)
 	if err != nil {
 		klog.Errorf("query device failed: %v", err)
 		return err
 	}
-	if len(*devices) <= 0 {
+	if len(devices) <= 0 {
 		return errors.New("Not found device from db")
 	}
-	device := (*devices)[0]
+	device := devices[0]
 
-	deviceAttr, err := dtclient.QueryDeviceAttr("deviceid", deviceID)
+	deviceAttr, err := DeviceServiceFactory().QueryDeviceAttr("deviceid", deviceID)
 	if err != nil {
 		klog.Errorf("query device attr failed: %v", err)
 		return err
 	}
-	attributes := make([]dtclient.DeviceAttr, 0)
+	attributes := make([]models.DeviceAttr, 0)
 	attributes = append(attributes, *deviceAttr...)
 
-	deviceTwin, err := dtclient.QueryDeviceTwin("deviceid", deviceID)
+	deviceTwin, err := DeviceServiceFactory().QueryDeviceTwin("deviceid", deviceID)
 	if err != nil {
 		klog.Errorf("query device twin failed: %v", err)
 		return err
 	}
-	twins := make([]dtclient.DeviceTwin, 0)
+	twins := make([]models.DeviceTwin, 0)
 	twins = append(twins, *deviceTwin...)
 
 	context.DeviceList.Store(deviceID, &dttype.Device{
@@ -208,7 +226,11 @@ func classifyMsg(message *dttype.DTMessage) bool {
 		} else {
 			identity = splitString[idLoc]
 			loc := strings.Index(topic, identity)
-			nextLoc := loc + len(identity)
+			var nextLoc int
+			if strings.Contains(topic, dtcommon.DeviceETPrefix) {
+				identity = identity + "/" + splitString[idLoc+1]
+			}
+			nextLoc = loc + len(identity)
 			prefix := topic[0:loc]
 			suffix := topic[nextLoc:]
 			klog.Infof("%s %s", prefix, suffix)
@@ -260,12 +282,25 @@ func classifyMsg(message *dttype.DTMessage) bool {
 			return true
 		}
 		return false
+	} else if strings.Compare(msgSource, "meta") == 0 || strings.Compare(msgSource, "metamanager") == 0 {
+		switch message.Msg.Content.(type) {
+		case []byte:
+			klog.Info("Message content type is []byte, no need to marshal again")
+		default:
+			content, err := json.Marshal(message.Msg.Content)
+			if err != nil {
+				return false
+			}
+			message.Msg.Content = content
+		}
+		message.Action = dtcommon.MetaDeviceOperation
+		return true
 	}
 	return false
 }
 
 func (dt *DeviceTwin) runDeviceTwin() {
-	moduleNames := []string{dtcommon.MemModule, dtcommon.TwinModule, dtcommon.DeviceModule, dtcommon.CommModule}
+	moduleNames := []string{dtcommon.MemModule, dtcommon.TwinModule, dtcommon.DeviceModule, dtcommon.CommModule, dtcommon.DMIModule}
 	for _, v := range moduleNames {
 		dt.RegisterDTModule(v)
 		go dt.DTModules[v].Start()

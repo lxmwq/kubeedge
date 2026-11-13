@@ -17,38 +17,44 @@ limitations under the License.
 package util
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
-	"github.com/blang/semver"
-	"github.com/google/uuid"
-
+	"github.com/kubeedge/api/apis/common/constants"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2/validation"
 	types "github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
+	"github.com/kubeedge/kubeedge/pkg/util"
+	"github.com/kubeedge/kubeedge/pkg/version"
+	"github.com/kubeedge/kubeedge/pkg/viaduct/pkg/api"
 )
 
-// KubeEdgeInstTool embedes Common struct and contains cloud node ip:port information
+// KubeEdgeInstTool embeds Common struct and contains cloud node ip:port information
 // It implements ToolsInstaller interface
 type KubeEdgeInstTool struct {
 	Common
 	CertPath              string
 	CloudCoreIP           string
 	EdgeNodeName          string
-	RuntimeType           string
 	RemoteRuntimeEndpoint string
 	Token                 string
 	CertPort              string
 	CGroupDriver          string
 	TarballPath           string
+	Labels                []string
+	HubProtocol           string
 }
 
-// InstallTools downloads KubeEdge for the specified verssion
+// InstallTools downloads KubeEdge for the specified version
 // and makes the required configuration changes and initiates edgecore.
 func (ku *KubeEdgeInstTool) InstallTools() error {
 	ku.SetOSInterface(GetOSInterface())
 
-	edgeCoreRunning, err := ku.IsKubeEdgeProcessRunning(KubeEdgeBinaryName)
+	edgeCoreRunning, err := ku.IsKubeEdgeProcessRunning(constants.KubeEdgeBinaryName)
 	if err != nil {
 		return err
 	}
@@ -81,98 +87,79 @@ func (ku *KubeEdgeInstTool) InstallTools() error {
 }
 
 func (ku *KubeEdgeInstTool) createEdgeConfigFiles() error {
-	if ku.ToolVersion.GE(semver.MustParse("1.2.0")) {
-		//This makes sure the path is created, if it already exists also it is fine
-		err := os.MkdirAll(KubeEdgeNewConfigDir, os.ModePerm)
-		if err != nil {
-			return fmt.Errorf("not able to create %s folder path", KubeEdgeNewConfigDir)
-		}
+	//This makes sure the path is created, if it already exists also it is fine
+	err := os.MkdirAll(KubeEdgeConfigDir, os.ModePerm)
+	if err != nil {
+		return fmt.Errorf("not able to create %s folder path", KubeEdgeConfigDir)
+	}
 
-		edgeCoreConfig := v1alpha1.NewDefaultEdgeCoreConfig()
-		edgeCoreConfig.Modules.EdgeHub.WebSocket.Server = ku.CloudCoreIP
-
-		if ku.EdgeNodeName != "" {
-			edgeCoreConfig.Modules.Edged.HostnameOverride = ku.EdgeNodeName
-		}
-		if ku.RuntimeType != "" {
-			edgeCoreConfig.Modules.Edged.RuntimeType = ku.RuntimeType
-		}
-		if ku.CGroupDriver != "" {
-			switch ku.CGroupDriver {
-			case v1alpha1.CGroupDriverSystemd:
-				edgeCoreConfig.Modules.Edged.CGroupDriver = v1alpha1.CGroupDriverSystemd
-			case v1alpha1.CGroupDriverCGroupFS:
-				edgeCoreConfig.Modules.Edged.CGroupDriver = v1alpha1.CGroupDriverCGroupFS
-			default:
-				return fmt.Errorf("unsupported CGroupDriver: %s", ku.CGroupDriver)
-			}
-		}
-
-		if ku.RemoteRuntimeEndpoint != "" {
-			edgeCoreConfig.Modules.Edged.RemoteRuntimeEndpoint = ku.RemoteRuntimeEndpoint
-			edgeCoreConfig.Modules.Edged.RemoteImageEndpoint = ku.RemoteRuntimeEndpoint
-		}
-		if ku.Token != "" {
-			edgeCoreConfig.Modules.EdgeHub.Token = ku.Token
-		}
-		if ku.CertPort != "" {
-			edgeCoreConfig.Modules.EdgeHub.HTTPServer = "https://" + strings.Split(ku.CloudCoreIP, ":")[0] + ":" + ku.CertPort
-		} else {
-			edgeCoreConfig.Modules.EdgeHub.HTTPServer = "https://" + strings.Split(ku.CloudCoreIP, ":")[0] + ":10002"
-		}
-
-		if ku.ToolVersion.Major == 1 && ku.ToolVersion.Minor == 2 {
-			edgeCoreConfig.Modules.EdgeHub.TLSPrivateKeyFile = strings.Join([]string{KubeEdgeCloudDefaultCertPath, "server.key"}, "")
-			edgeCoreConfig.Modules.EdgeHub.TLSCertFile = strings.Join([]string{KubeEdgeCloudDefaultCertPath, "server.crt"}, "")
-		}
-		if err := types.Write2File(KubeEdgeEdgeCoreNewYaml, edgeCoreConfig); err != nil {
-			return err
-		}
-	} else {
-		//This makes sure the path is created, if it already exists also it is fine
-		err := os.MkdirAll(KubeEdgeConfPath, os.ModePerm)
-		if err != nil {
-			return fmt.Errorf("not able to create %s folder path", KubeEdgeConfPath)
-		}
-
-		// //Create edge.yaml
-		//Update edge.yaml with a unique id against node id
-		//If the user doesn't provide any edge ID on the command line, then it generates unique id and assigns it.
-		edgeID := uuid.New().String()
-		if "" != ku.EdgeNodeName {
-			edgeID = ku.EdgeNodeName
-		}
-
-		serverIPAddr := "0.0.0.0"
-		if "" != ku.CloudCoreIP {
-			serverIPAddr = ku.CloudCoreIP
-		}
-
-		url := fmt.Sprintf("wss://%s:10000/%s/%s/events", serverIPAddr, types.DefaultProjectID, edgeID)
-		edgeYaml := &types.EdgeYamlSt{EdgeHub: types.EdgeHubSt{WebSocket: types.WebSocketSt{URL: url}},
-			EdgeD: types.EdgeDSt{RuntimeType: ku.RuntimeType}}
-
-		if err = types.WriteEdgeYamlFile(KubeEdgeConfigEdgeYaml, edgeYaml); err != nil {
-			return err
-		}
-
-		//Create modules.yaml
-		if err = types.WriteEdgeModulesYamlFile(KubeEdgeConfigModulesYaml); err != nil {
-			return err
+	edgeCoreConfig := v1alpha2.NewDefaultEdgeCoreConfig()
+	edgeCoreConfig.EdgeCoreVersion = version.Get().String()
+	if ku.EdgeNodeName != "" {
+		edgeCoreConfig.Modules.Edged.HostnameOverride = ku.EdgeNodeName
+	}
+	if ku.CGroupDriver != "" {
+		switch ku.CGroupDriver {
+		case v1alpha2.CGroupDriverSystemd:
+			edgeCoreConfig.Modules.Edged.TailoredKubeletConfig.CgroupDriver = v1alpha2.CGroupDriverSystemd
+		case v1alpha2.CGroupDriverCGroupFS:
+			edgeCoreConfig.Modules.Edged.TailoredKubeletConfig.CgroupDriver = v1alpha2.CGroupDriverCGroupFS
+		default:
+			return fmt.Errorf("unsupported CGroupDriver: %s", ku.CGroupDriver)
 		}
 	}
-	return nil
+
+	if ku.RemoteRuntimeEndpoint != "" {
+		edgeCoreConfig.Modules.Edged.TailoredKubeletConfig.ContainerRuntimeEndpoint = ku.RemoteRuntimeEndpoint
+		edgeCoreConfig.Modules.Edged.TailoredKubeletConfig.ImageServiceEndpoint = ku.RemoteRuntimeEndpoint
+	}
+	if ku.Token != "" {
+		edgeCoreConfig.Modules.EdgeHub.Token = ku.Token
+	}
+	cloudCoreIP := strings.Split(ku.CloudCoreIP, ":")[0]
+	if ku.CertPort != "" {
+		edgeCoreConfig.Modules.EdgeHub.HTTPServer = "https://" + cloudCoreIP + ":" + ku.CertPort
+	} else {
+		edgeCoreConfig.Modules.EdgeHub.HTTPServer = "https://" + cloudCoreIP + ":10002"
+	}
+
+	switch ku.HubProtocol {
+	case api.ProtocolTypeQuic:
+		edgeCoreConfig.Modules.EdgeHub.Quic.Enable = true
+		edgeCoreConfig.Modules.EdgeHub.WebSocket.Enable = false
+		edgeCoreConfig.Modules.EdgeHub.Quic.Server = ku.CloudCoreIP
+		edgeCoreConfig.Modules.EdgeHub.WebSocket.Server = net.JoinHostPort(cloudCoreIP, strconv.Itoa(constants.DefaultWebSocketPort))
+	case api.ProtocolTypeWS:
+		edgeCoreConfig.Modules.EdgeHub.Quic.Enable = false
+		edgeCoreConfig.Modules.EdgeHub.WebSocket.Enable = true
+		edgeCoreConfig.Modules.EdgeHub.Quic.Server = net.JoinHostPort(cloudCoreIP, strconv.Itoa(constants.DefaultQuicPort))
+		edgeCoreConfig.Modules.EdgeHub.WebSocket.Server = ku.CloudCoreIP
+	default:
+		return fmt.Errorf("unsupported hub of protocol: %s", ku.HubProtocol)
+	}
+	edgeCoreConfig.Modules.EdgeStream.TunnelServer = net.JoinHostPort(cloudCoreIP, strconv.Itoa(constants.DefaultTunnelPort))
+
+	if len(ku.Labels) >= 1 {
+		labelsMap := make(map[string]string)
+		for _, label := range ku.Labels {
+			key := strings.Split(label, "=")[0]
+			value := strings.Split(label, "=")[1]
+			labelsMap[key] = value
+		}
+		edgeCoreConfig.Modules.Edged.NodeLabels = labelsMap
+	}
+
+	if errs := validation.ValidateEdgeCoreConfiguration(edgeCoreConfig); len(errs) > 0 {
+		return errors.New(util.SpliceErrors(errs.ToAggregate().Errors()))
+	}
+	return edgeCoreConfig.WriteTo(KubeEdgeEdgeCoreNewYaml)
 }
 
-//TearDown method will remove the edge node from api-server and stop edgecore process
+// TearDown method will remove the edge node from api-server and stop edgecore process
 func (ku *KubeEdgeInstTool) TearDown() error {
 	ku.SetOSInterface(GetOSInterface())
 	ku.SetKubeEdgeVersion(ku.ToolVersion)
 
 	//Kill edge core process
-	if err := ku.KillKubeEdgeBinary(KubeEdgeBinaryName); err != nil {
-		return err
-	}
-
-	return nil
+	return ku.KillKubeEdgeBinary(constants.KubeEdgeBinaryName)
 }

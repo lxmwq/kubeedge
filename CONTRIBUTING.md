@@ -27,20 +27,22 @@ Please make sure to read and observe our [Code of Conduct](/CODE_OF_CONDUCT.md).
 KubeEdge is a community project driven by its community which strives to promote a healthy, friendly and productive environment.
 The goal of the community is to develop a cloud native edge computing platform built on top of Kubernetes to manage edge nodes and devices at scale and demonstrate resiliency, reliability in offline scenarios. To build a platform at such scale requires the support of a community with similar aspirations.
 
-- See [Community Membership](docs/contributing/community.md) for a list of various community roles. With gradual contributions, one can move up in the chain.
+- See [Community Membership](https://kubeedge.io/en/docs/community/membership/) for a list of various community roles. With gradual contributions, one can move up in the chain.
 
 
 # Getting started
 
 - Fork the repository on GitHub
-- Read the [setup](docs/setup/keadm.md) for deployment.
+- Read the [setup](https://kubeedge.io/docs/setup/install-with-keadm) for deployment.
+- Read the [Developer Guide](https://kubeedge.io/docs/category/developer-guide)
+
 
 
 # Your First Contribution
 
 We will help you to contribute in different areas like filing issues, developing features, fixing critical bugs and getting your work reviewed and merged.
 
-If you have questions about the development process, feel free to jump into our [Slack Channel](https://join.slack.com/t/kubeedge/shared_invite/enQtNjc0MTg2NTg2MTk0LWJmOTBmOGRkZWNhMTVkNGU1ZjkwNDY4MTY4YTAwNDAyMjRkMjdlMjIzYmMxODY1NGZjYzc4MWM5YmIxZjU1ZDI) or join our [mailing list](https://groups.google.com/forum/#!forum/kubeedge).
+If you have questions about the development process, feel free to jump into our [Slack Channel](https://kubeedge.io/docs/community/slack) or join our [mailing list](https://groups.google.com/forum/#!forum/kubeedge).
 
 ## Find something to work on
 
@@ -87,7 +89,7 @@ This is a rough outline of what a contributor's workflow looks like:
 ## Creating Pull Requests
 
 Pull requests are often called simply "PR".
-KubeEdge generally follows the standard [github pull request](https://help.github.com/articles/about-pull-requests/) process.
+KubeEdge generally follows the standard [GitHub pull request](https://help.github.com/articles/about-pull-requests/) process.
 To submit a proposed change, please develop the code/fix and add new test cases.
 After that, run these local verifications before submitting pull request to predict the pass or
 fail of continuous integration.

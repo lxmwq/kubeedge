@@ -1,24 +1,26 @@
 package devicetwin
 
 import (
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
 	"github.com/kubeedge/beehive/pkg/core"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
 	deviceconfig "github.com/kubeedge/kubeedge/edge/pkg/devicetwin/config"
-	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtclient"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcontext"
 	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtmodule"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
+	"github.com/kubeedge/kubeedge/pkg/features"
 )
 
-//DeviceTwin the module
+// DeviceTwin the module
 type DeviceTwin struct {
 	HeartBeatToModule map[string]chan interface{}
 	DTContexts        *dtcontext.DTContext
 	DTModules         map[string]dtmodule.DTModule
 	enable            bool
 }
+
+var _ core.Module = (*DeviceTwin)(nil)
 
 func newDeviceTwin(enable bool) *DeviceTwin {
 	return &DeviceTwin{
@@ -29,10 +31,9 @@ func newDeviceTwin(enable bool) *DeviceTwin {
 }
 
 // Register register devicetwin
-func Register(deviceTwin *v1alpha1.DeviceTwin, nodeName string) {
+func Register(deviceTwin *v1alpha2.DeviceTwin, nodeName string) {
 	deviceconfig.InitConfigure(deviceTwin, nodeName)
 	dt := newDeviceTwin(deviceTwin.Enable)
-	dtclient.InitDBTable(dt)
 	core.Register(dt)
 }
 
@@ -49,6 +50,16 @@ func (dt *DeviceTwin) Group() string {
 // Enable indicates whether this module is enabled
 func (dt *DeviceTwin) Enable() bool {
 	return dt.enable
+}
+
+func (dt *DeviceTwin) RestartPolicy() *core.ModuleRestartPolicy {
+	if !features.DefaultFeatureGate.Enabled(features.ModuleRestart) {
+		return nil
+	}
+	return &core.ModuleRestartPolicy{
+		RestartType:            core.RestartTypeOnFailure,
+		IntervalTimeGrowthRate: 2.0,
+	}
 }
 
 // Start run the module

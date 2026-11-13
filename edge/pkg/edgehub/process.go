@@ -1,175 +1,100 @@
 package edgehub
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
 	connect "github.com/kubeedge/kubeedge/edge/pkg/common/cloudconnection"
 	messagepkg "github.com/kubeedge/kubeedge/edge/pkg/common/message"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
-	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/clients"
 	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/config"
+	msghandler "github.com/kubeedge/kubeedge/edge/pkg/edgehub/messagehandler"
 )
 
-const (
-	waitConnectionPeriod = time.Minute
+var (
+	// longThrottleLatency defines threshold for logging requests. All requests being
+	// throttled (via the provided rateLimiter) for more than longThrottleLatency will
+	// be logged.
+	longThrottleLatency = 1 * time.Second
 )
-
-var groupMap = map[string]string{
-	"resource": modules.MetaGroup,
-	"twin":     modules.TwinGroup,
-	"func":     modules.MetaGroup,
-	"user":     modules.BusGroup,
-}
 
 func (eh *EdgeHub) initial() (err error) {
-	cloudHubClient, err := clients.GetClient()
+	cloudHubClient, err := eh.newClient()
 	if err != nil {
 		return err
 	}
 
+	eh.clientLock.Lock()
 	eh.chClient = cloudHubClient
+	eh.clientLock.Unlock()
 
-	return nil
-}
-
-func (eh *EdgeHub) addKeepChannel(msgID string) chan model.Message {
-	eh.keeperLock.Lock()
-	defer eh.keeperLock.Unlock()
-
-	tempChannel := make(chan model.Message)
-	eh.syncKeeper[msgID] = tempChannel
-
-	return tempChannel
-}
-
-func (eh *EdgeHub) deleteKeepChannel(msgID string) {
-	eh.keeperLock.Lock()
-	defer eh.keeperLock.Unlock()
-
-	delete(eh.syncKeeper, msgID)
-}
-
-func (eh *EdgeHub) isSyncResponse(msgID string) bool {
-	eh.keeperLock.RLock()
-	defer eh.keeperLock.RUnlock()
-
-	_, exist := eh.syncKeeper[msgID]
-	return exist
-}
-
-func (eh *EdgeHub) sendToKeepChannel(message model.Message) error {
-	eh.keeperLock.RLock()
-	defer eh.keeperLock.RUnlock()
-	channel, exist := eh.syncKeeper[message.GetParentID()]
-	if !exist {
-		klog.Errorf("failed to get sync keeper channel, messageID:%+v", message)
-		return fmt.Errorf("failed to get sync keeper channel, messageID:%+v", message)
-	}
-	// send response into synckeep channel
-	select {
-	case channel <- message:
-	default:
-		klog.Errorf("failed to send message to sync keep channel")
-		return fmt.Errorf("failed to send message to sync keep channel")
-	}
 	return nil
 }
 
 func (eh *EdgeHub) dispatch(message model.Message) error {
-	group := message.GetGroup()
-	md := ""
-	switch group {
-	case messagepkg.ResourceGroupName:
-		md = modules.MetaGroup
-	case messagepkg.TwinGroupName:
-		md = modules.TwinGroup
-	case messagepkg.FuncGroupName:
-		md = modules.MetaGroup
-	case messagepkg.UserGroupName:
-		md = modules.BusGroup
-	default:
-		klog.Warningf("msg_group not found")
-		return fmt.Errorf("msg_group not found")
-	}
-
-	isResponse := eh.isSyncResponse(message.GetParentID())
-	if !isResponse {
-		beehiveContext.SendToGroup(md, message)
-		return nil
-	}
-	return eh.sendToKeepChannel(message)
+	return msghandler.ProcessHandler(message, eh.client())
 }
 
-func (eh *EdgeHub) routeToEdge() {
+func (eh *EdgeHub) routeToEdge(stop <-chan struct{}) {
 	for {
 		select {
 		case <-beehiveContext.Done():
 			klog.Warning("EdgeHub RouteToEdge stop")
 			return
+		case <-stop:
+			return
 		default:
 		}
-		message, err := eh.chClient.Receive()
+		message, err := eh.client().Receive()
 		if err != nil {
 			klog.Errorf("websocket read error: %v", err)
-			eh.reconnectChan <- struct{}{}
+			eh.triggerReconnect()
 			return
 		}
-
-		klog.V(4).Infof("received msg from cloud-hub:%+v", message)
-		err = eh.dispatch(message)
-		if err != nil {
-			klog.Errorf("failed to dispatch message, discard: %v", err)
+		klog.V(4).Infof("[edgehub/routeToEdge] receive msg from cloud, msg: %+v", message)
+		if err = eh.dispatch(message); err != nil {
+			klog.Error(err)
 		}
 	}
 }
 
 func (eh *EdgeHub) sendToCloud(message model.Message) error {
 	eh.keeperLock.Lock()
-	err := eh.chClient.Send(message)
+	klog.V(4).Infof("[edgehub/sendToCloud] send msg to cloud, msg: %+v", message)
+	err := eh.client().Send(message)
 	eh.keeperLock.Unlock()
 	if err != nil {
-		klog.Errorf("failed to send message: %v", err)
 		return fmt.Errorf("failed to send message, error: %v", err)
-	}
-
-	syncKeep := func(message model.Message) {
-		tempChannel := eh.addKeepChannel(message.GetID())
-		sendTimer := time.NewTimer(time.Duration(config.Config.Heartbeat) * time.Second)
-		select {
-		case response := <-tempChannel:
-			sendTimer.Stop()
-			beehiveContext.SendResp(response)
-			eh.deleteKeepChannel(response.GetParentID())
-		case <-sendTimer.C:
-			klog.Warningf("timeout to receive response for message: %+v", message)
-			eh.deleteKeepChannel(message.GetID())
-		}
-	}
-
-	if message.IsSync() {
-		go syncKeep(message)
 	}
 
 	return nil
 }
 
-func (eh *EdgeHub) routeToCloud() {
+func (eh *EdgeHub) routeToCloud(stop <-chan struct{}) {
 	for {
 		select {
 		case <-beehiveContext.Done():
 			klog.Warning("EdgeHub RouteToCloud stop")
 			return
+		case <-stop:
+			return
 		default:
 		}
-		message, err := beehiveContext.Receive(ModuleNameEdgeHub)
+		message, err := beehiveContext.Receive(modules.EdgeHubModuleName)
 		if err != nil {
 			klog.Errorf("failed to receive message from edge: %v", err)
 			time.Sleep(time.Second)
+			continue
+		}
+
+		err = eh.tryThrottle(message.GetID())
+		if err != nil {
+			klog.Errorf("msgID: %s, client rate limiter returned an error: %v ", message.GetID(), err)
 			continue
 		}
 
@@ -177,55 +102,101 @@ func (eh *EdgeHub) routeToCloud() {
 		err = eh.sendToCloud(message)
 		if err != nil {
 			klog.Errorf("failed to send message to cloud: %v", err)
-			eh.reconnectChan <- struct{}{}
+			eh.triggerReconnect()
 			return
 		}
 	}
 }
 
-func (eh *EdgeHub) keepalive() {
+func (eh *EdgeHub) keepalive(stop <-chan struct{}) {
 	for {
 		select {
 		case <-beehiveContext.Done():
 			klog.Warning("EdgeHub KeepAlive stop")
 			return
+		case <-stop:
+			return
 		default:
 		}
 		msg := model.NewMessage("").
-			BuildRouter(ModuleNameEdgeHub, "resource", "node", "keepalive").
+			BuildRouter(modules.EdgeHubModuleName, "resource", "node", messagepkg.OperationKeepalive).
 			FillBody("ping")
 
 		// post message to cloud hub
 		err := eh.sendToCloud(*msg)
 		if err != nil {
 			klog.Errorf("websocket write error: %v", err)
-			eh.reconnectChan <- struct{}{}
+			eh.triggerReconnect()
 			return
 		}
 
-		time.Sleep(time.Duration(config.Config.Heartbeat) * time.Second)
+		select {
+		case <-stop:
+			return
+		case <-time.After(time.Duration(config.Config.Heartbeat) * time.Second):
+		}
 	}
 }
 
+var pubGroups = []string{modules.TwinGroup, modules.MetaGroup, modules.BusGroup, modules.TaskManagerGroup}
+
 func (eh *EdgeHub) pubConnectInfo(isConnected bool) {
+	// update connected info
+	connect.SetConnected(isConnected)
+
 	// var info model.Message
 	content := connect.CloudConnected
 	if !isConnected {
 		content = connect.CloudDisconnected
 	}
 
-	for _, group := range groupMap {
+	for _, group := range pubGroups {
 		message := model.NewMessage("").BuildRouter(messagepkg.SourceNodeConnection, group,
 			messagepkg.ResourceTypeNodeConnection, messagepkg.OperationNodeConnection).FillBody(content)
 		beehiveContext.SendToGroup(group, *message)
 	}
 }
 
-func (eh *EdgeHub) ifRotationDone() {
+func (eh *EdgeHub) ifRotationDone(done <-chan struct{}) {
 	if eh.certManager.RotateCertificates {
 		for {
-			<-eh.certManager.Done
-			eh.reconnectChan <- struct{}{}
+			select {
+			case <-done:
+				return
+			case <-eh.certManager.Done:
+				// Send on the dedicated rotation channel so the signal
+				// cannot be coalesced away with transport reconnects:
+				// unlike reconnectChan, rotateChan is not touched by the
+				// post-connect drain; it is consumed by the reconnect wait
+				// in Start, and dropped only while disconnected, right
+				// before an Init() that reads the newest certificate
+				// anyway. Buffered(1) + non-blocking keeps this loop from
+				// blocking when a signal is already pending — one pending
+				// rotation reconnect is enough, the newest certificate is
+				// always read from disk.
+				select {
+				case eh.rotateChan <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}
+}
+
+func (eh *EdgeHub) tryThrottle(msgID string) error {
+	now := time.Now()
+
+	err := eh.rateLimiter.Wait(context.TODO())
+	if err != nil {
+		return err
+	}
+
+	latency := time.Since(now)
+
+	message := fmt.Sprintf("Waited for %v due to client-side throttling, msgID: %s", latency, msgID)
+	if latency > longThrottleLatency {
+		klog.V(2).Info(message)
+	}
+
+	return nil
 }

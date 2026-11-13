@@ -4,32 +4,35 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/kubeedge/edge/pkg/metamanager"
+	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/models"
 )
 
-const (
+var (
 	syncPeriod         = 10 * time.Millisecond
 	syncMsgRespTimeout = 1 * time.Minute
 )
 
-//CoreInterface is interface of mataclient
+// CoreInterface is interface of metaclient
 type CoreInterface interface {
 	PodsGetter
 	PodStatusGetter
 	ConfigMapsGetter
+	EventsGetter
 	NodesGetter
 	NodeStatusGetter
 	SecretsGetter
-	EndpointsGetter
-	ServiceGetter
+	ServiceAccountTokenGetter
+	ServiceAccountsGetter
 	PersistentVolumesGetter
 	PersistentVolumeClaimsGetter
 	VolumeAttachmentsGetter
-	ListenerGetter
+	LeasesGetter
+	CertificateSigningRequestsGetter
 }
 
 type metaClient struct {
@@ -44,6 +47,10 @@ func (m *metaClient) ConfigMaps(namespace string) ConfigMapsInterface {
 	return newConfigMaps(namespace, m.send)
 }
 
+func (m *metaClient) Events(namespace string) EventsInterface {
+	return newEvents(namespace, m.send)
+}
+
 func (m *metaClient) Nodes(namespace string) NodesInterface {
 	return newNodes(namespace, m.send)
 }
@@ -56,23 +63,21 @@ func (m *metaClient) Secrets(namespace string) SecretsInterface {
 	return newSecrets(namespace, m.send)
 }
 
+func (m *metaClient) ServiceAccountToken() ServiceAccountTokenInterface {
+	return newServiceAccountToken(m.send)
+}
+
+func (m *metaClient) ServiceAccounts(namespace string) ServiceAccountInterface {
+	return newServiceAccount(namespace)
+}
+
 func (m *metaClient) PodStatus(namespace string) PodStatusInterface {
 	return newPodStatus(namespace, m.send)
 }
 
-//New creates a new metaclient
-func (m *metaClient) Endpoints(namespace string) EndpointsInterface {
-	return newEndpoints(namespace, m.send)
-}
-
-// New Services metaClient
-func (m *metaClient) Services(namespace string) ServiceInterface {
-	return newServices(namespace, m.send)
-}
-
 // New PersistentVolumes metaClient
-func (m *metaClient) PersistentVolumes(namespace string) PersistentVolumesInterface {
-	return newPersistentVolumes(namespace, m.send)
+func (m *metaClient) PersistentVolumes() PersistentVolumesInterface {
+	return newPersistentVolumes(m.send)
 }
 
 // New PersistentVolumeClaims metaClient
@@ -85,9 +90,12 @@ func (m *metaClient) VolumeAttachments(namespace string) VolumeAttachmentsInterf
 	return newVolumeAttachments(namespace, m.send)
 }
 
-// New Listener metaClient
-func (m *metaClient) Listener() ListenInterface {
-	return newListener(m.send)
+func (m *metaClient) Leases(namespace string) LeasesInterface {
+	return newLeases(namespace, m.send)
+}
+
+func (m *metaClient) CertificateSigningRequests() CertificateSigningRequestInterface {
+	return newCertificateSigningRequests(m.send)
 }
 
 // New creates new metaclient
@@ -97,7 +105,7 @@ func New() CoreInterface {
 	}
 }
 
-//SendInterface is to sync interface
+// SendInterface is to sync interface
 type SendInterface interface {
 	SendSync(message *model.Message) (*model.Message, error)
 	Send(message *model.Message)
@@ -115,10 +123,10 @@ func (s *send) SendSync(message *model.Message) (*model.Message, error) {
 	var resp model.Message
 	retries := 0
 	err = wait.Poll(syncPeriod, syncMsgRespTimeout, func() (bool, error) {
-		resp, err = beehiveContext.SendSync(metamanager.MetaManagerModuleName, *message, syncMsgRespTimeout)
+		resp, err = beehiveContext.SendSync(modules.MetaManagerModuleName, *message, syncMsgRespTimeout)
 		retries++
 		if err == nil {
-			klog.V(2).Infof("send sync message %s successed and response: %v", message.GetResource(), resp)
+			klog.V(4).Infof("send sync message %s succeed and response: %v", message.GetResource(), resp)
 			return true, nil
 		}
 		if retries < 3 {
@@ -131,5 +139,11 @@ func (s *send) SendSync(message *model.Message) (*model.Message, error) {
 }
 
 func (s *send) Send(message *model.Message) {
-	beehiveContext.Send(metamanager.MetaManagerModuleName, *message)
+	beehiveContext.Send(modules.MetaManagerModuleName, *message)
+}
+
+// MetaServiceInterface is interface for meta service operations
+type MetaServiceInterface interface {
+	InsertOrUpdate(meta *models.Meta) error
+	QueryMeta(key, value string) (*[]string, error)
 }

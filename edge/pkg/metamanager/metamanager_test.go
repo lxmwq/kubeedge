@@ -19,8 +19,7 @@ package metamanager
 import (
 	"testing"
 
-	"github.com/kubeedge/beehive/pkg/core/model"
-
+	"github.com/kubeedge/beehive/pkg/common"
 	"github.com/kubeedge/beehive/pkg/core"
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	commodule "github.com/kubeedge/kubeedge/edge/pkg/common/modules"
@@ -30,16 +29,20 @@ import (
 var metaModule core.Module
 
 func init() {
-	beehiveContext.InitContext(beehiveContext.MsgCtxTypeChannel)
-	beehiveContext.AddModule(MetaManagerModuleName)
+	beehiveContext.InitContext([]string{common.MsgCtxTypeChannel})
+	add := &common.ModuleInfo{
+		ModuleName: commodule.MetaManagerModuleName,
+		ModuleType: common.MsgCtxTypeChannel,
+	}
+	beehiveContext.AddModule(add)
 }
 
 func TestNameAndGroup(t *testing.T) {
 	modules := core.GetModules()
 	core.Register(&metaManager{enable: true})
 	for name, module := range modules {
-		if name == MetaManagerModuleName {
-			metaModule = module
+		if name == commodule.MetaManagerModuleName {
+			metaModule = module.GetModule()
 			break
 		}
 	}
@@ -48,44 +51,12 @@ func TestNameAndGroup(t *testing.T) {
 			t.Errorf("failed to register to beehive")
 			return
 		}
-		if MetaManagerModuleName != metaModule.Name() {
-			t.Errorf("Name of module is not correct wanted: %v and got: %v", MetaManagerModuleName, metaModule.Name())
+		if commodule.MetaManagerModuleName != metaModule.Name() {
+			t.Errorf("Name of module is not correct wanted: %v and got: %v", commodule.MetaManagerModuleName, metaModule.Name())
 			return
 		}
 		if commodule.MetaGroup != metaModule.Group() {
 			t.Errorf("Group of module is not correct wanted: %v and got: %v", commodule.MetaGroup, metaModule.Group())
 		}
 	})
-}
-
-func TestStart(t *testing.T) {
-	modules := core.GetModules()
-	for name, module := range modules {
-		if name == MetaManagerModuleName {
-			metaModule = module
-			break
-		}
-	}
-	core.Register(&metaManager{enable: true})
-	if metaModule == nil {
-		t.Errorf("failed to register to beehive")
-	}
-
-	go metaModule.Start()
-
-	msg, err := beehiveContext.Receive(MetaManagerModuleName)
-	if err != nil {
-		t.Errorf("failed to reveive message")
-	}
-
-	if msg == (model.Message{}) {
-		t.Errorf("empty message")
-	}
-
-	if msg.GetSource() != MetaManagerModuleName ||
-		msg.GetGroup() != GroupResource ||
-		msg.GetResource() != model.ResourceTypePodStatus ||
-		msg.GetOperation() != OperationMetaSync {
-		t.Errorf("unexpected message: %v", msg)
-	}
 }

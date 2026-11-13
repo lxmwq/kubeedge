@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2018 The KubeEdge Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,16 +17,17 @@ limitations under the License.
 package util
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
-	"k8s.io/klog"
+	nodeutil "k8s.io/component-helpers/node/util"
+	"k8s.io/kubernetes/pkg/apis/core/validation"
 
 	"github.com/kubeedge/kubeedge/common/constants"
 )
@@ -34,24 +35,33 @@ import (
 func GetLocalIP(hostName string) (string, error) {
 	var ipAddr net.IP
 	var err error
+
+	// fix https://github.com/kubeedge/kubeedge/issues/6023
+	// LookupIP maybe get docker0 ip's or other cni ip's
+	// Using the IP of the default-route interface may be safer.
+	// if get default ip fails then should use LookupIP
+	// ignore when ChooseHostInterface fails
+	ipAddr, err = utilnet.ChooseHostInterface()
+	if err == nil {
+		return ipAddr.String(), nil
+	}
+
+	// if ChooseHostInterface fails we can use LookupIP
 	addrs, _ := net.LookupIP(hostName)
 	for _, addr := range addrs {
-		if err := ValidateNodeIP(addr); err == nil {
-			if addr.To4() != nil {
-				ipAddr = addr
-				break
-			}
-			if addr.To16() != nil && ipAddr == nil {
-				ipAddr = addr
-			}
+		if err := ValidateNodeIP(addr); err != nil {
+			continue
+		}
+		if addr.To4() != nil {
+			ipAddr = addr
+			break
+		}
+		if ipAddr == nil && addr.To16() != nil {
+			ipAddr = addr
 		}
 	}
 	if ipAddr == nil {
-		ipAddr, err = utilnet.ChooseHostInterface()
-	}
-
-	if err != nil {
-		return "", err
+		return "", fmt.Errorf("can not get any usable node IP")
 	}
 
 	return ipAddr.String(), nil
@@ -92,21 +102,20 @@ func ValidateNodeIP(nodeIP net.IP) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("Node IP: %q not found in the host's network interfaces", nodeIP.String())
+	return fmt.Errorf("node IP: %q not found in the host's network interfaces", nodeIP.String())
 }
 
-//Command executes command and returns output
+// Command executes command and returns output
 func Command(name string, arg []string) (string, error) {
 	cmd := exec.Command(name, arg...)
 	ret, err := cmd.Output()
 	if err != nil {
-		klog.Errorf("exec command failed: %v", err)
 		return string(ret), err
 	}
 	return strings.Trim(string(ret), "\n"), nil
 }
 
-//GetCurPath returns filepath
+// GetCurPath returns filepath
 func GetCurPath() string {
 	file, _ := exec.LookPath(os.Args[0])
 	path, _ := filepath.Abs(file)
@@ -127,14 +136,38 @@ func SpliceErrors(errors []error) string {
 	return stb.String()
 }
 
-// GetPodSandboxImage return snadbox image name based on arch, default image is for amd64.
-func GetPodSandboxImage() string {
-	switch runtime.GOARCH {
-	case "arm":
-		return constants.DefaultArmPodSandboxImage
-	case "arm64":
-		return constants.DefaultArm64PodSandboxImage
-	default:
-		return constants.DefaultPodSandboxImage
+// GetHostname returns a reasonable hostname
+func GetHostname() string {
+	hostnameOverride, err := nodeutil.GetHostname("")
+	if err != nil {
+		return constants.DefaultHostnameOverride
 	}
+	msgs := validation.ValidateNodeName(hostnameOverride, false)
+	if len(msgs) > 0 {
+		return constants.DefaultHostnameOverride
+	}
+	return hostnameOverride
+}
+
+// ConcatStrings use bytes.buffer to concatenate string variable
+func ConcatStrings(ss ...string) string {
+	var bff bytes.Buffer
+	for _, s := range ss {
+		bff.WriteString(s)
+	}
+	return bff.String()
+}
+
+// GetResourceID return resource ID
+func GetResourceID(namespace, name string) string {
+	return namespace + "/" + name
+}
+
+// GetNamespacedName return namespaced name
+func GetNamespacedName(resourceID string) (string, string, error) {
+	parts := strings.Split(resourceID, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid resourceID %s", resourceID)
+	}
+	return parts[0], parts[1], nil
 }

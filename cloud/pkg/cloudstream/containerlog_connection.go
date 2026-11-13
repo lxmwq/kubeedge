@@ -22,9 +22,9 @@ import (
 	"io"
 	"net"
 
-	"k8s.io/klog"
-
 	"github.com/emicklei/go-restful"
+	"k8s.io/klog/v2"
+
 	"github.com/kubeedge/kubeedge/common/constants"
 	"github.com/kubeedge/kubeedge/pkg/stream"
 )
@@ -38,6 +38,19 @@ type ContainerLogsConnection struct {
 	flush        io.Writer
 	session      *Session
 	edgePeerStop chan struct{}
+	closeChan    chan bool
+}
+
+func (l *ContainerLogsConnection) String() string {
+	return fmt.Sprintf("APIServer_LogsConnection MessageID %v", l.MessageID)
+}
+
+func (l *ContainerLogsConnection) WriteToAPIServer(p []byte) (n int, err error) {
+	return l.flush.Write(p)
+}
+
+func (l *ContainerLogsConnection) SetMessageID(id uint64) {
+	l.MessageID = id
 }
 
 func (l *ContainerLogsConnection) GetMessageID() uint64 {
@@ -45,27 +58,20 @@ func (l *ContainerLogsConnection) GetMessageID() uint64 {
 }
 
 func (l *ContainerLogsConnection) SetEdgePeerDone() {
-	close(l.edgePeerStop)
+	select {
+	case <-l.closeChan:
+		return
+	case l.EdgePeerDone() <- struct{}{}:
+		klog.V(6).Infof("success send channel deleting connection with messageID %v", l.MessageID)
+	}
 }
 
-func (l *ContainerLogsConnection) EdgePeerDone() <-chan struct{} {
+func (l *ContainerLogsConnection) EdgePeerDone() chan struct{} {
 	return l.edgePeerStop
-}
-
-func (l *ContainerLogsConnection) WriteToAPIServer(p []byte) (n int, err error) {
-	return l.flush.Write(p)
 }
 
 func (l *ContainerLogsConnection) WriteToTunnel(m *stream.Message) error {
 	return l.session.WriteMessageToTunnel(m)
-}
-
-func (l *ContainerLogsConnection) SetMessageID(id uint64) {
-	l.MessageID = id
-}
-
-func (l *ContainerLogsConnection) String() string {
-	return fmt.Sprintf("APIServer_LogsConnection MessageID %v", l.MessageID)
 }
 
 func (l *ContainerLogsConnection) SendConnection() (stream.EdgedConnection, error) {
@@ -89,6 +95,7 @@ func (l *ContainerLogsConnection) SendConnection() (stream.EdgedConnection, erro
 
 func (l *ContainerLogsConnection) Serve() error {
 	defer func() {
+		close(l.closeChan)
 		klog.Infof("%s end successful", l.String())
 	}()
 
@@ -113,8 +120,8 @@ func (l *ContainerLogsConnection) Serve() error {
 			klog.Infof("%s send close message to edge successfully", l.String())
 			return nil
 		case <-l.EdgePeerDone():
-			klog.Infof("%s find edge peer done, so stop this connection", l.String())
-			return nil
+			klog.V(6).Infof("%s find edge peer done, so stop this connection", l.String())
+			return fmt.Errorf("%s find edge peer done, so stop this connection", l.String())
 		}
 	}
 }

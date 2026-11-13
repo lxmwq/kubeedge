@@ -1,14 +1,21 @@
 module github.com/kubeedge/beehive
 
-go 1.14
+go 1.25.14
 
 require (
-	github.com/satori/go.uuid v1.2.0
-	gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 // indirect
-	k8s.io/klog v1.0.0
+	github.com/google/uuid v1.6.0
+	github.com/stretchr/testify v1.10.0
+	k8s.io/klog/v2 v2.140.0
+	sigs.k8s.io/yaml v1.4.0
 )
 
-replace (
-	github.com/apache/servicecomb-kie v0.1.0 => github.com/apache/servicecomb-kie v0.0.0-20190905062319-5ee098c8886f // indirect. TODO: remove this line when servicecomb-kie has a stable release
-	github.com/kubeedge/beehive => ../beehive
+require (
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/go-logr/logr v1.4.2 // indirect
+	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/kr/pretty v0.3.1 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/rogpeppe/go-internal v1.12.0 // indirect
+	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

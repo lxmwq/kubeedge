@@ -22,7 +22,7 @@ import (
 	"strconv"
 
 	"github.com/spf13/pflag"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 )
 
@@ -104,7 +104,7 @@ func PrintMinConfigAndExitIfRequested(config interface{}) {
 	}
 }
 
-// PrintDefaultConfigAndExitIfRequested will check if the -defaultconfig flag was passed
+// PrintDefaultConfigAndExitIfRequested will check if the --defaultconfig flag was passed
 // and, if so, print the default config and exit.
 func PrintDefaultConfigAndExitIfRequested(config interface{}) {
 	if *defaultConfigFlag == ConfigTrue {

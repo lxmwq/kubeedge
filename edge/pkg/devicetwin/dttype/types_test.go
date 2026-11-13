@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
-	uuid "github.com/satori/go.uuid"
+	"github.com/google/uuid"
+
+	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcommon"
 )
 
 // TestSetEventID is function to test SetEventID().
@@ -34,7 +36,7 @@ func TestSetEventID(t *testing.T) {
 	}{
 		{
 			name:    "SetEventIDTest",
-			eventID: uuid.NewV4().String(),
+			eventID: uuid.New().String(),
 		},
 	}
 	for _, test := range tests {
@@ -75,7 +77,7 @@ func createDevTwinMetaDeleted(deviceID string) map[string]*MsgTwin {
 	value := "ON"
 	devTwin := map[string]*MsgTwin{}
 	metaData := TypeMetadata{
-		Type: "deleted",
+		Type: dtcommon.TypeDeleted,
 	}
 	msgTwin := MsgTwin{
 		Expected: &TwinValue{
@@ -265,7 +267,7 @@ func TestCompareWithCloud(t *testing.T) {
 	}
 }
 
-//TestUpdateCloudVersion tests UpdateCloudVersion().
+// TestUpdateCloudVersion tests UpdateCloudVersion().
 func TestUpdateCloudVersion(t *testing.T) {
 	twinVersion := TwinVersion{CloudVersion: 1}
 	bytesTwinVersion, _ := json.Marshal(twinVersion)

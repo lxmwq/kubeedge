@@ -7,7 +7,7 @@ import (
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 )
 
-//Constants for module name and group
+// Constants for module name and group
 const (
 	DestinationModule = "destinationmodule"
 	DestinationGroup  = "destinationgroup"
@@ -55,4 +55,8 @@ func (m *testModuleDest) Start() {
 	//	resp = message.NewRespByMessage(&message, "20 years old")
 	//	c.SendResp(*resp)
 	//}
+}
+
+func (m *testModuleDest) RestartPolicy() *core.ModuleRestartPolicy {
+	return nil
 }

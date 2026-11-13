@@ -16,8 +16,8 @@ build/
 │   └── README_zh.md
 ├── crds
 │   └── devices
-│       ├── devices_v1alpha2_devicemodel.yaml
-│       └── devices_v1alpha2_device.yaml
+│       ├── devices_v1beta1_devicemodel.yaml
+│       └── devices_v1beta1_device.yaml
 ├── crd-samples
 │   └── devices
 │       ├── create-device-instance.yaml
@@ -50,14 +50,14 @@ build/
 - tools
 
 ## cloud
-edegcontroller以deployment部署的相关步骤及说明
+cloudcore使用kubernetes deployment部署的相关步骤及说明
 
 ## crds
 
 ## crd-samples
 
 ## edge
-edgecore以deployment部署的相关步骤及说明
+edgecore使用kubernetes deployment部署的相关步骤及说明（仅测试环境使用）
 
 ## node.json
 创建node资源的示例
@@ -72,3 +72,6 @@ edgecore以deployment部署的相关步骤及说明
 
 ## deployment.yaml
 deployment的模板,用于部署nginx到edge node使用
+
+## rpm
+制作rpm包相关文件,如`kubeedge.spec`

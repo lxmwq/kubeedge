@@ -1,13 +1,10 @@
 package manager
 
 import (
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/config"
+	"github.com/kubeedge/api/apis/componentconfig/cloudcore/v1alpha1"
 )
 
 // SecretManager manage all events of secret by SharedInformer
@@ -21,14 +18,12 @@ func (sm *SecretManager) Events() chan watch.Event {
 }
 
 // NewSecretManager create SecretManager by kube clientset and namespace
-func NewSecretManager(kubeClient *kubernetes.Clientset, namespace string) (*SecretManager, error) {
-	lw := cache.NewListWatchFromClient(kubeClient.CoreV1().RESTClient(), "secrets", namespace, fields.Everything())
-	events := make(chan watch.Event, config.Config.Buffer.SecretEvent)
-	rh := NewCommonResourceEventHandler(events)
-	si := cache.NewSharedInformer(lw, &v1.Secret{}, 0)
-	si.AddEventHandler(rh)
-	stopNever := make(chan struct{})
-	go si.Run(stopNever)
+func NewSecretManager(config *v1alpha1.EdgeController, si cache.SharedIndexInformer) (*SecretManager, error) {
+	events := make(chan watch.Event, config.Buffer.SecretEvent)
+	rh := NewCommonResourceEventHandler(events, nil)
+	if _, err := si.AddEventHandler(rh); err != nil {
+		return nil, err
+	}
 
 	return &SecretManager{events: events}, nil
 }

@@ -1,32 +1,44 @@
 package edgecontroller
 
 import (
-	"os"
+	"k8s.io/klog/v2"
 
-	"k8s.io/klog"
-
+	"github.com/kubeedge/api/apis/componentconfig/cloudcore/v1alpha1"
 	"github.com/kubeedge/beehive/pkg/core"
+	"github.com/kubeedge/kubeedge/cloud/pkg/common/informers"
 	"github.com/kubeedge/kubeedge/cloud/pkg/common/modules"
-	"github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/config"
 	"github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/controller"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/cloudcore/v1alpha1"
 )
 
 // EdgeController use beehive context message layer
 type EdgeController struct {
-	enable bool
+	config     v1alpha1.EdgeController
+	upstream   *controller.UpstreamController
+	downstream *controller.DownstreamController
 }
 
-func newEdgeController(enable bool) *EdgeController {
-	return &EdgeController{
-		enable: enable,
+var _ core.Module = (*EdgeController)(nil)
+
+func newEdgeController(config *v1alpha1.EdgeController) *EdgeController {
+	ec := &EdgeController{config: *config}
+	if !ec.Enable() {
+		return ec
 	}
+	var err error
+	ec.upstream, err = controller.NewUpstreamController(config, informers.GetInformersManager().GetKubeInformerFactory())
+	if err != nil {
+		klog.Exitf("new upstream controller failed with error: %s", err)
+	}
+
+	ec.downstream, err = controller.NewDownstreamController(config, informers.GetInformersManager().GetKubeInformerFactory(), informers.GetInformersManager(), informers.GetInformersManager().GetKubeEdgeInformerFactory())
+	if err != nil {
+		klog.Exitf("new downstream controller failed with error: %s", err)
+	}
+	return ec
 }
 
-func Register(ec *v1alpha1.EdgeController, kubeAPIConfig *v1alpha1.KubeAPIConfig, nodeName string, edgesite bool) {
-	// TODO move module config into EdgeController struct @kadisi
-	config.InitConfigure(ec, kubeAPIConfig, nodeName, edgesite)
-	core.Register(newEdgeController(ec.Enable))
+func Register(ec *v1alpha1.EdgeController) {
+	core.Register(newEdgeController(ec))
 }
 
 // Name of controller
@@ -41,27 +53,20 @@ func (ec *EdgeController) Group() string {
 
 // Enable indicates whether enable this module
 func (ec *EdgeController) Enable() bool {
-	return ec.enable
+	return ec.config.Enable
+}
+
+func (ec *EdgeController) RestartPolicy() *core.ModuleRestartPolicy {
+	return nil
 }
 
 // Start controller
 func (ec *EdgeController) Start() {
-	upstream, err := controller.NewUpstreamController()
-	if err != nil {
-		klog.Errorf("new upstream controller failed with error: %s", err)
-		os.Exit(1)
+	if err := ec.upstream.Start(); err != nil {
+		klog.Exitf("start upstream failed with error: %s", err)
 	}
 
-	if err := upstream.Start(); err != nil {
-		klog.Fatalf("start upstream failed with error: %s", err)
-	}
-
-	downstream, err := controller.NewDownstreamController()
-	if err != nil {
-		klog.Fatalf("new downstream controller failed with error: %s", err)
-	}
-
-	if err := downstream.Start(); err != nil {
-		klog.Fatalf("start downstream failed with error: %s", err)
+	if err := ec.downstream.Start(); err != nil {
+		klog.Exitf("start downstream failed with error: %s", err)
 	}
 }

@@ -10,12 +10,12 @@ import (
 	"github.com/kubeedge/beehive/pkg/core/model"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/message"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
-	"github.com/kubeedge/kubeedge/edge/pkg/metamanager"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/models"
 )
 
 // PersistentVolumesGetter is interface to get client PersistentVolumes
 type PersistentVolumesGetter interface {
-	PersistentVolumes(namespace string) PersistentVolumesInterface
+	PersistentVolumes() PersistentVolumesInterface
 }
 
 // PersistentVolumesInterface is interface for client PersistentVolumes
@@ -27,49 +27,41 @@ type PersistentVolumesInterface interface {
 }
 
 type persistentvolumes struct {
-	namespace string
-	send      SendInterface
+	send SendInterface
 }
 
-func newPersistentVolumes(n string, s SendInterface) *persistentvolumes {
+func newPersistentVolumes(s SendInterface) *persistentvolumes {
 	return &persistentvolumes{
-		namespace: n,
-		send:      s,
+		send: s,
 	}
 }
 
-func (c *persistentvolumes) Create(pv *api.PersistentVolume) (*api.PersistentVolume, error) {
+func (c *persistentvolumes) Create(*api.PersistentVolume) (*api.PersistentVolume, error) {
 	return nil, nil
 }
 
-func (c *persistentvolumes) Update(pv *api.PersistentVolume) error {
+func (c *persistentvolumes) Update(*api.PersistentVolume) error {
 	return nil
 }
 
-func (c *persistentvolumes) Delete(name string) error {
+func (c *persistentvolumes) Delete(string) error {
 	return nil
 }
 
-func (c *persistentvolumes) Get(name string, options metav1.GetOptions) (*api.PersistentVolume, error) {
-	resource := fmt.Sprintf("%s/%s/%s", c.namespace, "persistentvolume", name)
+func (c *persistentvolumes) Get(name string, _ metav1.GetOptions) (*api.PersistentVolume, error) {
+	resource := fmt.Sprintf("%s/%s/%s", models.NullNamespace, "persistentvolume", name)
 	pvMsg := message.BuildMsg(modules.MetaGroup, "", modules.EdgedModuleName, resource, model.QueryOperation, nil)
 	msg, err := c.send.SendSync(pvMsg)
 	if err != nil {
 		return nil, fmt.Errorf("get persistentvolume from metaManager failed, err: %v", err)
 	}
 
-	var content []byte
-	switch msg.Content.(type) {
-	case []byte:
-		content = msg.GetContent().([]byte)
-	default:
-		content, err = json.Marshal(msg.GetContent())
-		if err != nil {
-			return nil, fmt.Errorf("marshal message to persistentvolume failed, err: %v", err)
-		}
+	content, err := msg.GetContentData()
+	if err != nil {
+		return nil, fmt.Errorf("parse message to persistentvolume failed, err: %v", err)
 	}
 
-	if msg.GetOperation() == model.ResponseOperation && msg.GetSource() == metamanager.MetaManagerModuleName {
+	if msg.GetOperation() == model.ResponseOperation && msg.GetSource() == modules.MetaManagerModuleName {
 		return handlePersistentVolumeFromMetaDB(content)
 	}
 	return handlePersistentVolumeFromMetaManager(content)
@@ -95,10 +87,10 @@ func handlePersistentVolumeFromMetaDB(content []byte) (*api.PersistentVolume, er
 }
 
 func handlePersistentVolumeFromMetaManager(content []byte) (*api.PersistentVolume, error) {
-	var pv *api.PersistentVolume
+	var pv api.PersistentVolume
 	err := json.Unmarshal(content, &pv)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal message to persistentvolume failed, err: %v", err)
 	}
-	return pv, nil
+	return &pv, nil
 }

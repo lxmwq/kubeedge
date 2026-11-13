@@ -19,17 +19,21 @@ package dttype
 import (
 	"encoding/json"
 	"errors"
-	"reflect"
+	"fmt"
 	"testing"
 	"time"
 
-	"github.com/satori/go.uuid"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 
-	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtclient"
+	"github.com/kubeedge/kubeedge/edge/pkg/devicetwin/dtcommon"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/models"
 )
 
 // TestUnmarshalMembershipDetail is function to test UnmarshalMembershipDetails()
 func TestUnmarshalMembershipDetail(t *testing.T) {
+	assert := assert.New(t)
+
 	var memDetail MembershipDetail
 	bytesMemDetail, _ := json.Marshal(memDetail)
 	tests := []struct {
@@ -55,25 +59,19 @@ func TestUnmarshalMembershipDetail(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := UnmarshalMembershipDetail(test.membershipDetail)
 			if err != nil {
-				if !reflect.DeepEqual(err.Error(), test.wantErr.Error()) {
-					t.Errorf("Error Got = %v,Want =%v", err.Error(), test.wantErr.Error())
-					return
-				}
+				assert.EqualError(err, test.wantErr.Error())
 			} else {
-				if !reflect.DeepEqual(err, test.wantErr) {
-					t.Errorf("Error Got = %v,Want =%v", err, test.wantErr)
-					return
-				}
+				assert.NoError(err)
 			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("UnmarshalMembershipDetail() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
 // TestUnmarshalMembershipUpdate is function to test UnmarshalMembershipUpdate().
 func TestUnmarshalMembershipUpdate(t *testing.T) {
+	assert := assert.New(t)
+
 	var memUpdate MembershipUpdate
 	bytesMemUpdate, _ := json.Marshal(memUpdate)
 	tests := []struct {
@@ -99,25 +97,19 @@ func TestUnmarshalMembershipUpdate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := UnmarshalMembershipUpdate(test.membershipUpdate)
 			if err != nil {
-				if !reflect.DeepEqual(err.Error(), test.wantErr.Error()) {
-					t.Errorf("Error Got = %v,Want =%v", err.Error(), test.wantErr.Error())
-					return
-				}
+				assert.EqualError(err, test.wantErr.Error())
 			} else {
-				if !reflect.DeepEqual(err, test.wantErr) {
-					t.Errorf("Error Got = %v,Want =%v", err, test.wantErr)
-					return
-				}
+				assert.NoError(err)
 			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("UnmarshalMembershipUpdate() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
 // TestUnmarshalBaseMessage is function to test UnmarshalBaseMessage().
 func TestUnmarshalBaseMessage(t *testing.T) {
+	assert := assert.New(t)
+
 	var baseMessage BaseMessage
 	bytesBaseMessage, _ := json.Marshal(baseMessage)
 	tests := []struct {
@@ -143,27 +135,21 @@ func TestUnmarshalBaseMessage(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := UnmarshalBaseMessage(test.baseMsg)
 			if err != nil {
-				if !reflect.DeepEqual(err.Error(), test.wantErr.Error()) {
-					t.Errorf("Error Got = %v,Want =%v", err.Error(), test.wantErr.Error())
-					return
-				}
+				assert.EqualError(err, test.wantErr.Error())
 			} else {
-				if !reflect.DeepEqual(err, test.wantErr) {
-					t.Errorf("Error Got = %v,Want =%v", err, test.wantErr)
-					return
-				}
+				assert.NoError(err)
 			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("UnmarshalBaseMessage() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
 // TestDeviceAttrToMsgAttr is function to test DeviceAttrtoMsgAttr().
 func TestDeviceAttrToMsgAttr(t *testing.T) {
-	var devAttr []dtclient.DeviceAttr
-	attr := dtclient.DeviceAttr{
+	assert := assert.New(t)
+
+	var devAttr []models.DeviceAttr
+	attr := models.DeviceAttr{
 		ID:          00,
 		DeviceID:    "DeviceA",
 		Name:        "SensorTag",
@@ -186,7 +172,7 @@ func TestDeviceAttrToMsgAttr(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		deviceAttrs []dtclient.DeviceAttr
+		deviceAttrs []models.DeviceAttr
 		want        map[string]*MsgAttr
 	}{
 		{
@@ -198,48 +184,46 @@ func TestDeviceAttrToMsgAttr(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := DeviceAttrToMsgAttr(tt.deviceAttrs)
-			if len(got) != len(tt.want) {
-				t.Errorf("DeviceAttrToMsgAttr failed due to wrong map size, Got Size = %v Want = %v", len(got), len(tt.want))
-			}
+			assert.Equal(len(tt.want), len(got), "DeviceAttrToMsgAttr failed due to wrong map size")
 			for gotKey, gotValue := range got {
-				keyPresent := false
-				for wantKey, wantValue := range tt.want {
-					if gotKey == wantKey {
-						keyPresent = true
-						if !reflect.DeepEqual(gotValue.Metadata, wantValue.Metadata) || !reflect.DeepEqual(gotValue.Optional, wantValue.Optional) || !reflect.DeepEqual(gotValue.Value, wantValue.Value) {
-							t.Errorf("Error in DeviceAttrToMsgAttr() Got wrong value for key %v", gotKey)
-							return
-						}
-					}
-				}
-				if keyPresent == false {
-					t.Errorf("DeviceAttrToMsgAttr failed() due to wrong key %v", gotKey)
-				}
+				wantValue, keyPresent := tt.want[gotKey]
+				assert.True(keyPresent, "DeviceAttrToMsgAttr failed due to wrong key %v", gotKey)
+				assert.Equal(wantValue.Metadata, gotValue.Metadata, "Error in DeviceAttrToMsgAttr() Got wrong value for key %v", gotKey)
+				assert.Equal(wantValue.Optional, gotValue.Optional, "Error in DeviceAttrToMsgAttr() Got wrong value for key %v", gotKey)
+				assert.Equal(wantValue.Value, gotValue.Value, "Error in DeviceAttrToMsgAttr() Got wrong value for key %v", gotKey)
 			}
 		})
 	}
 }
 
 // createDeviceTwin() is function to create an array of DeviceTwin.
-func createDeviceTwin(devTwin dtclient.DeviceTwin) []dtclient.DeviceTwin {
-	deviceTwin := []dtclient.DeviceTwin{}
+func createDeviceTwin(devTwin models.DeviceTwin) []models.DeviceTwin {
+	deviceTwin := []models.DeviceTwin{}
 	deviceTwin = append(deviceTwin, devTwin)
 	return deviceTwin
 }
 
 // createMessageTwinFromDeviceTwin() is function to create MessageTwin corresponding to a particular DeviceTwin.
-func createMessageTwinFromDeviceTwin(devTwin dtclient.DeviceTwin) map[string]*MsgTwin {
-	var expectedMeta ValueMetadata
+func createMessageTwinFromDeviceTwin(t *testing.T, devTwin models.DeviceTwin) map[string]*MsgTwin {
+	var (
+		expectedMeta ValueMetadata
+		err          error
+	)
 	expectedValue := &TwinValue{Value: &devTwin.Expected}
-	json.Unmarshal([]byte(devTwin.ExpectedMeta), &expectedMeta)
+	err = json.Unmarshal([]byte(devTwin.ExpectedMeta), &expectedMeta)
+	assert.NoError(t, err)
 	expectedValue.Metadata = &expectedMeta
 	var actualMeta ValueMetadata
 	actualValue := &TwinValue{Value: &devTwin.Actual}
-	json.Unmarshal([]byte(devTwin.ActualMeta), &actualMeta)
+	err = json.Unmarshal([]byte(devTwin.ActualMeta), &actualMeta)
+	assert.NoError(t, err)
+	actualValue.Metadata = &actualMeta
 	var expectedVersion TwinVersion
-	json.Unmarshal([]byte(devTwin.ExpectedVersion), &expectedVersion)
+	err = json.Unmarshal([]byte(devTwin.ExpectedVersion), &expectedVersion)
+	assert.NoError(t, err)
 	var actualVersion TwinVersion
-	json.Unmarshal([]byte(devTwin.ActualVersion), &actualVersion)
+	err = json.Unmarshal([]byte(devTwin.ActualVersion), &actualVersion)
+	assert.NoError(t, err)
 	msgTwins := make(map[string]*MsgTwin)
 	msgTwin := &MsgTwin{
 		Optional: &devTwin.Optional,
@@ -257,25 +241,27 @@ func createMessageTwinFromDeviceTwin(devTwin dtclient.DeviceTwin) map[string]*Ms
 
 // TestDeviceTwinToMsgTwin is function to test DeviceTwinToMsgTwin().
 func TestDeviceTwinToMsgTwin(t *testing.T) {
-	devTwin := dtclient.DeviceTwin{
+	assert := assert.New(t)
+
+	devTwin := models.DeviceTwin{
 		ID:              00,
 		DeviceID:        "DeviceA",
 		Name:            "SensorTag",
 		Description:     "Sensor",
 		Expected:        "ON",
 		Actual:          "ON",
-		ExpectedVersion: "Version1",
-		ActualVersion:   "Version1",
+		ExpectedVersion: `{"cloud": 10, "Edge": 10}`,
+		ActualVersion:   `{"cloud": 10, "Edge": 10}`,
 		Optional:        true,
-		ExpectedMeta:    "Updation",
-		ActualMeta:      "Updation",
+		ExpectedMeta:    fmt.Sprintf(`{"timestamp": %d}`, time.Now().Unix()),
+		ActualMeta:      fmt.Sprintf(`{"timestamp": %d}`, time.Now().Unix()),
 		AttrType:        "Temperature",
 	}
 	deviceTwin := createDeviceTwin(devTwin)
-	msgTwins := createMessageTwinFromDeviceTwin(devTwin)
+	msgTwins := createMessageTwinFromDeviceTwin(t, devTwin)
 	tests := []struct {
 		name        string
-		deviceTwins []dtclient.DeviceTwin
+		deviceTwins []models.DeviceTwin
 		want        map[string]*MsgTwin
 	}{
 		{
@@ -286,15 +272,15 @@ func TestDeviceTwinToMsgTwin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := DeviceTwinToMsgTwin(tt.deviceTwins); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("DeviceTwinToMsgTwin() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(tt.want, DeviceTwinToMsgTwin(tt.deviceTwins))
 		})
 	}
 }
 
 // TestMsgAttrToDeviceAttr is function to test MsgAttrToDeviceAttr().
 func TestMsgAttrToDeviceAttr(t *testing.T) {
+	assert := assert.New(t)
+
 	optional := true
 	metadata := &TypeMetadata{
 		Type: "string",
@@ -303,7 +289,7 @@ func TestMsgAttrToDeviceAttr(t *testing.T) {
 		Optional: &optional,
 		Metadata: metadata,
 	}
-	wantDeviceAttr := dtclient.DeviceAttr{
+	wantDeviceAttr := models.DeviceAttr{
 		Name:     "Sensor",
 		AttrType: metadata.Type,
 		Optional: optional,
@@ -313,7 +299,7 @@ func TestMsgAttrToDeviceAttr(t *testing.T) {
 		name         string
 		attrname     string
 		msgAttribute *MsgAttr
-		want         dtclient.DeviceAttr
+		want         models.DeviceAttr
 	}{
 		{
 			name:         "MsgAttrToDeviceAttrTest",
@@ -324,15 +310,15 @@ func TestMsgAttrToDeviceAttr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := MsgAttrToDeviceAttr(tt.attrname, tt.msgAttribute); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("MsgAttrToDeviceAttr() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(tt.want, MsgAttrToDeviceAttr(tt.attrname, tt.msgAttribute))
 		})
 	}
 }
 
 // TestCopyMsgTwin is function to test CopyMsgTwin().
 func TestCopyMsgTwin(t *testing.T) {
+	assert := assert.New(t)
+
 	tests := []struct {
 		name      string
 		msgTwin   *MsgTwin
@@ -384,15 +370,16 @@ func TestCopyMsgTwin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := CopyMsgTwin(tt.msgTwin, tt.noVersion); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("CopyMsgTwin() = %v, want %v", got, tt.want)
-			}
+			got := CopyMsgTwin(tt.msgTwin, tt.noVersion)
+			assert.Equal(tt.want, got)
 		})
 	}
 }
 
 // TestCopyMsgAttr is function to test CopyMsgAttr().
 func TestCopyMsgAttr(t *testing.T) {
+	assert := assert.New(t)
+
 	optional := true
 	metaData := TypeMetadata{Type: "Attribute"}
 	tests := []struct {
@@ -416,22 +403,23 @@ func TestCopyMsgAttr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := CopyMsgAttr(tt.msgAttr); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("CopyMsgAttr() = %v, want %v", got, tt.want)
-			}
+			got := CopyMsgAttr(tt.msgAttr)
+			assert.Equal(tt.want, got)
 		})
 	}
 }
 
 // TestMsgTwinToDeviceTwin is function to test MsgTwinToDeviceTwin().
 func TestMsgTwinToDeviceTwin(t *testing.T) {
+	assert := assert.New(t)
+
 	optional := true
 	metadata := TypeMetadata{Type: "Twin"}
 	tests := []struct {
 		name     string
 		twinName string
 		msgTwin  *MsgTwin
-		want     dtclient.DeviceTwin
+		want     models.DeviceTwin
 	}{
 		{
 			name:     "MsgTwinToDeviceTwinTest",
@@ -440,7 +428,7 @@ func TestMsgTwinToDeviceTwin(t *testing.T) {
 				Optional: &optional,
 				Metadata: &metadata,
 			},
-			want: dtclient.DeviceTwin{
+			want: models.DeviceTwin{
 				Name:     "DeviceA",
 				AttrType: metadata.Type,
 				Optional: optional,
@@ -449,24 +437,30 @@ func TestMsgTwinToDeviceTwin(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := MsgTwinToDeviceTwin(test.twinName, test.msgTwin); !reflect.DeepEqual(got, test.want) {
-				t.Errorf("MsgTwinToDeviceTwin() = %v, want %v", got, test.want)
-			}
+			got := MsgTwinToDeviceTwin(test.twinName, test.msgTwin)
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
-//TestBuildDeviceState is function to test BuildDeviceState().
+// TestBuildDeviceState is function to test BuildDeviceCloudMsgState().
 func TestBuildDeviceState(t *testing.T) {
-	baseMessage := BaseMessage{EventID: uuid.NewV4().String(), Timestamp: time.Now().UnixNano() / 1e6}
+	assert := assert.New(t)
+
+	baseMessage := BaseMessage{EventID: uuid.New().String(), Timestamp: time.Now().UnixNano() / 1e6}
 	device := Device{
 		Name:       "SensorTag",
 		State:      "ON",
 		LastOnline: "Today",
 	}
+	deviceCloudMsg := DeviceCloudMsg{
+		Name:           "SensorTag",
+		State:          "ON",
+		LastOnlineTime: "Today",
+	}
 	deviceMsg := DeviceMsg{
-		BaseMessage: baseMessage,
-		Device:      device,
+		BaseMessage:    baseMessage,
+		DeviceCloudMsg: deviceCloudMsg,
 	}
 	want, _ := json.Marshal(deviceMsg)
 	tests := []struct {
@@ -486,25 +480,22 @@ func TestBuildDeviceState(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := BuildDeviceState(test.baseMessage, test.device)
-			if !reflect.DeepEqual(err, test.wantErr) {
-				t.Errorf("Error Got = %v,Want =%v", err, test.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("BuildDeviceState() = %v, want %v", got, test.want)
-			}
+			got, err := BuildDeviceCloudMsgState(test.baseMessage, test.device)
+			assert.Equal(test.wantErr, err)
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
 // TestBuildDeviceAttrUpdate is function to test BuildDeviceAttrUpdate().
 func TestBuildDeviceAttrUpdate(t *testing.T) {
+	assert := assert.New(t)
+
 	baseMessage := BaseMessage{
-		EventID:   uuid.NewV4().String(),
+		EventID:   uuid.New().String(),
 		Timestamp: time.Now().UnixNano() / 1e6,
 	}
-	attr := dtclient.DeviceAttr{
+	attr := models.DeviceAttr{
 		ID:          00,
 		DeviceID:    "DeviceA",
 		Name:        "SensorTag",
@@ -545,13 +536,8 @@ func TestBuildDeviceAttrUpdate(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := BuildDeviceAttrUpdate(test.baseMessage, test.attrs)
-			if !reflect.DeepEqual(err, test.wantErr) {
-				t.Errorf("Error Got = %v,Want =%v", err, test.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("BuildDeviceAttrUpdate() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.wantErr, err)
+			assert.Equal(test.want, got)
 		})
 	}
 }
@@ -607,7 +593,9 @@ func createMembershipGetResult(message BaseMessage) MembershipGetResult {
 
 // TestBuildMembershipGetResult is function to test BuildMembershipGetResult().
 func TestBuildMembershipGetResult(t *testing.T) {
-	baseMessage := BaseMessage{EventID: uuid.NewV4().String(), Timestamp: time.Now().UnixNano() / 1e6}
+	assert := assert.New(t)
+
+	baseMessage := BaseMessage{EventID: uuid.New().String(), Timestamp: time.Now().UnixNano() / 1e6}
 	devices := createDevice()
 	memGetResult := createMembershipGetResult(baseMessage)
 	bytesMemGetResult, _ := json.Marshal(memGetResult)
@@ -629,32 +617,18 @@ func TestBuildMembershipGetResult(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := BuildMembershipGetResult(test.baseMessage, test.devices)
-			if !reflect.DeepEqual(err, test.wantErr) {
-				t.Errorf("BuildMembershipGetResult() error = %v, wantErr %v", err, test.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("BuildMembershipGetResult() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.wantErr, err)
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
-//createMessageTwin() is function to create a map of MessageTwin with MetaDataType updated and deleted.
+// createMessageTwin() is function to create a map of MessageTwin with MetaDataType updated and deleted.
 func createMessageTwin() map[string]*MsgTwin {
 	msgTwins := make(map[string]*MsgTwin)
-	twinMetadataDeleted := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "deleted"},
-	}
-	twinMetadataUpdated := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-	}
 	msgTwins["empty"] = nil
-	msgTwins["deleted"] = &twinMetadataDeleted
-	msgTwins["updated"] = &twinMetadataUpdated
+	msgTwins[dtcommon.TypeDeleted] = generateTwinActualExpected(dtcommon.TypeDeleted, "", "")
+	msgTwins["updated"] = generateTwinActualExpected(dtcommon.TypeUpdated, "", "")
 	return msgTwins
 }
 
@@ -662,12 +636,7 @@ func createMessageTwin() map[string]*MsgTwin {
 func createDeviceTwinResultDealTypeGet(baseMessage BaseMessage) DeviceTwinResult {
 	resultDealType0Twin := make(map[string]*MsgTwin)
 	resultDealType0Twin["empty"] = nil
-	twinMetadataUpdated := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-	}
-	resultDealType0Twin["updated"] = &twinMetadataUpdated
+	resultDealType0Twin["updated"] = generateTwinActualExpected(dtcommon.TypeUpdated, "", "")
 	devTwinResult := DeviceTwinResult{
 		BaseMessage: baseMessage,
 		Twin:        resultDealType0Twin,
@@ -689,7 +658,9 @@ func createDeviceTwinResult(baseMessage BaseMessage) DeviceTwinResult {
 
 // TestBuildDeviceTwinResult is function to test BuildDeviceTwinResult().
 func TestBuildDeviceTwinResult(t *testing.T) {
-	baseMessage := BaseMessage{EventID: uuid.NewV4().String(), Timestamp: time.Now().UnixNano() / 1e6}
+	assert := assert.New(t)
+
+	baseMessage := BaseMessage{EventID: uuid.New().String(), Timestamp: time.Now().UnixNano() / 1e6}
 	msgTwins := createMessageTwin()
 	devTwinResultDealType0 := createDeviceTwinResultDealTypeGet(baseMessage)
 	bytesDealType0, _ := json.Marshal(devTwinResultDealType0)
@@ -723,19 +694,16 @@ func TestBuildDeviceTwinResult(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := BuildDeviceTwinResult(test.baseMessage, test.twins, test.dealType)
-			if !reflect.DeepEqual(err, test.wantErr) {
-				t.Errorf("BuildDeviceTwinResult() error = %v, wantErr %v", err, test.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("BuildDeviceTwinResult() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.wantErr, err)
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
 // TestBuildErrorResult is function to test BuildErrorResult().
 func TestBuildErrorResult(t *testing.T) {
+	assert := assert.New(t)
+
 	result := Result{BaseMessage: BaseMessage{
 		EventID: ""},
 		Code:   1,
@@ -756,29 +724,21 @@ func TestBuildErrorResult(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := BuildErrorResult(test.para)
-			gotResult := Result{}
-			json.Unmarshal(got, &gotResult)
-			if !reflect.DeepEqual(err, test.wantErr) {
-				t.Errorf("BuildErrorResult() error = %v, wantErr %v", err, test.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(gotResult.EventID, test.want.EventID) {
-				t.Errorf("BuildErrorResult() error EventID = %v, want = %v", gotResult.EventID, test.want.EventID)
-				return
-			}
-			if !reflect.DeepEqual(gotResult.Reason, test.want.Reason) {
-				t.Errorf("BuildErrorResult() error Reason = %v, want = %v", gotResult.Reason, test.want.Reason)
-				return
-			}
-			if !reflect.DeepEqual(gotResult.Code, test.want.Code) {
-				t.Errorf("BuildErrorResult() error Code = %v, want = %v", gotResult.Code, test.want.Code)
-			}
+			var gotResult Result
+			err = json.Unmarshal(got, &gotResult)
+			assert.NoError(err)
+			assert.Equal(test.wantErr, err)
+			assert.Equal(test.want.EventID, gotResult.EventID)
+			assert.Equal(test.want.Reason, gotResult.Reason)
+			assert.Equal(test.want.Code, gotResult.Code)
 		})
 	}
 }
 
 // TestUnmarshalDeviceUpdate is function to test UnmarshalDeviceUpdate().
 func TestUnmarshalDeviceUpdate(t *testing.T) {
+	assert := assert.New(t)
+
 	var devUpdate DeviceUpdate
 	bytesDevUpdate, _ := json.Marshal(devUpdate)
 	tests := []struct {
@@ -797,58 +757,21 @@ func TestUnmarshalDeviceUpdate(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := UnmarshalDeviceUpdate(test.payload)
-			if !reflect.DeepEqual(err, test.wantErr) {
-				t.Errorf("UnmarshalDeviceUpdate() error = %v, wantErr %v", err, test.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("UnmarshalDeviceUpdate() = %v, want %v", got, test.want)
-			}
+			assert.Equal(test.wantErr, err)
+			assert.Equal(test.want, got)
 		})
 	}
 }
 
 // createMessageTwinWithDiffValues() is function to create MessageTwin with actual and expected values.
-func createMessageTwinWithDiffValues(baseMessage BaseMessage) map[string]*MsgTwin {
+func createMessageTwinWithDiffValues(BaseMessage) map[string]*MsgTwin {
 	msgTwins := make(map[string]*MsgTwin)
-	twinMetadataDeleted := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "deleted",
-		},
-	}
 	expected := "ON"
 	actual := "OFF"
-	twinActualExpected := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Expected: &TwinValue{
-			Value: &expected,
-		},
-		Actual: &TwinValue{
-			Value: &actual,
-		},
-	}
-	msgTwins["deleted"] = &twinMetadataDeleted
-	msgTwins["twin"] = &twinActualExpected
-	twinExpected := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Expected: &TwinValue{
-			Value: &expected,
-		},
-	}
-	msgTwins["expected"] = &twinExpected
-	twinActual := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Actual: &TwinValue{
-			Value: &expected,
-		},
-	}
-	msgTwins["actual"] = &twinActual
+	msgTwins[dtcommon.TypeDeleted] = generateTwinActualExpected(dtcommon.TypeDeleted, "", "")
+	msgTwins[dtcommon.DeviceTwinModule] = generateTwinActualExpected(dtcommon.TypeUpdated, expected, actual)
+	msgTwins["expected"] = generateTwinActualExpected(dtcommon.TypeUpdated, expected, "")
+	msgTwins["actual"] = generateTwinActualExpected(dtcommon.TypeUpdated, "", expected)
 	return msgTwins
 }
 
@@ -856,18 +779,7 @@ func createMessageTwinWithDiffValues(baseMessage BaseMessage) map[string]*MsgTwi
 func createMessageTwinWithSameValues() map[string]*MsgTwin {
 	value := "ON"
 	msgTwin := make(map[string]*MsgTwin)
-	twins := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Actual: &TwinValue{
-			Value: &value,
-		},
-		Expected: &TwinValue{
-			Value: &value,
-		},
-	}
-	msgTwin["twins"] = &twins
+	msgTwin["twins"] = generateTwinActualExpected(dtcommon.TypeUpdated, value, value)
 	return msgTwin
 }
 
@@ -876,51 +788,11 @@ func createMessageTwinAndDeltaWithDiffValues() (map[string]*MsgTwin, map[string]
 	delta := make(map[string]string)
 	expected := "ON"
 	actual := "OFF"
-	twinActualExpected := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Expected: &TwinValue{
-			Value: &expected,
-		},
-		Actual: &TwinValue{
-			Value: &actual,
-		},
-	}
-	twinExpected := MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Expected: &TwinValue{
-			Value: &expected,
-		},
-	}
-	delta["twin"] = *twinActualExpected.Expected.Value
-	delta["expected"] = *twinExpected.Expected.Value
+	delta["twin"] = expected
+	delta["expected"] = expected
 	resultTwin := make(map[string]*MsgTwin)
-	resultTwin["twin"] = &MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Expected: &TwinValue{
-			Value: &expected,
-		},
-		Actual: &TwinValue{
-			Value: &actual,
-		},
-		ActualVersion:   nil,
-		ExpectedVersion: nil,
-	}
-	resultTwin["expected"] = &MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Expected: &TwinValue{
-			Value: &expected,
-		},
-		ActualVersion:   nil,
-		ExpectedVersion: nil,
-	}
+	resultTwin["twin"] = generateTwinActualExpected(dtcommon.TypeUpdated, expected, actual)
+	resultTwin["expected"] = generateTwinActualExpected(dtcommon.TypeUpdated, expected, "")
 	return resultTwin, delta
 }
 
@@ -929,24 +801,14 @@ func createMessageTwinAndDeltaWithSameValues() (map[string]*MsgTwin, map[string]
 	value := "ON"
 	deltas := make(map[string]string)
 	resultTwins := make(map[string]*MsgTwin)
-	resultTwins["twins"] = &MsgTwin{
-		Metadata: &TypeMetadata{
-			Type: "updated",
-		},
-		Actual: &TwinValue{
-			Value: &value,
-		},
-		Expected: &TwinValue{
-			Value: &value,
-		},
-		ActualVersion:   nil,
-		ExpectedVersion: nil,
-	}
+	resultTwins["twins"] = generateTwinActualExpected(dtcommon.TypeUpdated, value, value)
 	return resultTwins, deltas
 }
 
 // TestBuildDeviceTwinDelta is function to test BuildDeviceTwinDelta().
 func TestBuildDeviceTwinDelta(t *testing.T) {
+	assert := assert.New(t)
+
 	baseMessage := BaseMessage{EventID: "Event1", Timestamp: time.Now().UnixNano() / 1e6}
 	msgTwins := createMessageTwinWithDiffValues(baseMessage)
 	delta := make(map[string]string)
@@ -979,31 +841,21 @@ func TestBuildDeviceTwinDelta(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, got1 := BuildDeviceTwinDelta(test.baseMessage, test.twins)
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("BuildDeviceTwinDelta() got = %v, want %v", got, test.want)
-			}
-			if got1 != test.wantBool {
-				t.Errorf("BuildDeviceTwinDelta() got1 = %v, want %v", got1, test.wantBool)
-			}
+			got, gotBool := BuildDeviceTwinDelta(test.baseMessage, test.twins)
+			assert.Equal(test.want, got)
+			assert.Equal(test.wantBool, gotBool)
 		})
 	}
 }
 
 // TestBuildDeviceTwinDocument is function to test BuildDeviceTwinDocument().
 func TestBuildDeviceTwinDocument(t *testing.T) {
+	assert := assert.New(t)
+
 	twinDoc := make(map[string]*TwinDoc)
 	doc := TwinDoc{
-		LastState: &MsgTwin{
-			Metadata: &TypeMetadata{
-				Type: "updated",
-			},
-		},
-		CurrentState: &MsgTwin{
-			Metadata: &TypeMetadata{
-				Type: "deleted",
-			},
-		},
+		LastState:    generateTwinActualExpected(dtcommon.TypeUpdated, "", ""),
+		CurrentState: generateTwinActualExpected(dtcommon.TypeDeleted, "", ""),
 	}
 	twinDoc["SensorTag"] = &doc
 	timeStamp := time.Now().UnixNano() / 1e6
@@ -1033,12 +885,22 @@ func TestBuildDeviceTwinDocument(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, gotBool := BuildDeviceTwinDocument(test.baseMessage, test.twins)
-			if !reflect.DeepEqual(got, test.want) {
-				t.Errorf("BuildDeviceTwinDocument() got = %v, want %v", got, test.want)
-			}
-			if gotBool != test.wantBool {
-				t.Errorf("BuildDeviceTwinDocument() gotBool = %v, want %v", gotBool, test.wantBool)
-			}
+			assert.Equal(test.want, got, "BuildDeviceTwinDocument() got = %v, want %v", got, test.want)
+			assert.Equal(test.wantBool, gotBool, "BuildDeviceTwinDocument() gotBool = %v, want %v", gotBool, test.wantBool)
 		})
+	}
+}
+
+func generateTwinActualExpected(t, expected, actual string) *MsgTwin {
+	return &MsgTwin{
+		Metadata: &TypeMetadata{
+			Type: t,
+		},
+		Expected: &TwinValue{
+			Value: &expected,
+		},
+		Actual: &TwinValue{
+			Value: &actual,
+		},
 	}
 }

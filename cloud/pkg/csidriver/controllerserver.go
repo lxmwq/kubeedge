@@ -20,14 +20,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/protobuf/jsonpb"
-	"github.com/pborman/uuid"
+	"github.com/google/uuid"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/kubeedge/beehive/pkg/core/model"
 	"github.com/kubeedge/kubeedge/common/constants"
@@ -53,7 +54,7 @@ func newControllerServer(nodeID, kubeEdgeEndpoint string) *controllerServer {
 }
 
 // CreateVolume issues create volume func
-func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	// Check arguments
 	if len(req.GetName()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Name missing in request")
@@ -63,10 +64,9 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		return nil, status.Error(codes.InvalidArgument, "Volume Capabilities missing in request")
 	}
 
-	volumeID := uuid.NewUUID().String()
+	volumeID := uuid.New().String()
 
 	// Build message struct
-	msg := model.NewMessage("")
 	resource, err := buildResource(cs.nodeID,
 		DefaultNamespace,
 		constants.CSIResourceTypeVolume,
@@ -83,11 +83,9 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		return nil, err
 	}
 	klog.V(4).Infof("create volume marshal to string: %s", js)
-	msg.Content = js
-	msg.BuildRouter(DefaultReceiveModuleName,
-		GroupResource,
-		resource,
-		constants.CSIOperationTypeCreateVolume)
+	msg := model.NewMessage("").
+		BuildRouter(DefaultReceiveModuleName, GroupResource, resource, constants.CSIOperationTypeCreateVolume).
+		FillBody(js)
 
 	// Marshal message
 	reqData, err := json.Marshal(msg)
@@ -111,7 +109,11 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	klog.V(4).Infof("create volume result: %v", result)
-	data := result.GetContent().(string)
+	data, ok := result.GetContent().(string)
+	if !ok {
+		klog.Errorf("content is not string type: %v", result.GetContent())
+		return nil, fmt.Errorf("content type %T is not string", result.GetContent())
+	}
 
 	if result.GetOperation() == model.ResponseErrorOperation {
 		klog.Errorf("create volume with error: %s", data)
@@ -125,10 +127,10 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	response := &csi.CreateVolumeResponse{}
-	err = json.Unmarshal([]byte(decodeBytes), response)
+	err = json.Unmarshal(decodeBytes, response)
 	if err != nil {
 		klog.Errorf("create volume unmarshal with error: %v", err)
-		return nil, nil
+		return nil, err
 	}
 	klog.V(4).Infof("create volume response: %v", response)
 
@@ -146,14 +148,13 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 }
 
 // DeleteVolume issues delete volume func
-func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
+func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	// Check arguments
 	if len(req.GetVolumeId()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing in request")
 	}
 
 	// Build message struct
-	msg := model.NewMessage("")
 	resource, err := buildResource(cs.nodeID,
 		DefaultNamespace,
 		constants.CSIResourceTypeVolume,
@@ -170,11 +171,9 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		return nil, err
 	}
 	klog.V(4).Infof("delete volume marshal to string: %s", js)
-	msg.Content = js
-	msg.BuildRouter(DefaultReceiveModuleName,
-		GroupResource,
-		resource,
-		constants.CSIOperationTypeDeleteVolume)
+	msg := model.NewMessage("").
+		BuildRouter(DefaultReceiveModuleName, GroupResource, resource, constants.CSIOperationTypeDeleteVolume).
+		FillBody(js)
 
 	// Marshal message
 	reqData, err := json.Marshal(msg)
@@ -198,9 +197,13 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	}
 
 	klog.V(4).Infof("delete volume result: %v", result)
-	data := result.GetContent().(string)
+	data, ok := result.GetContent().(string)
+	if !ok {
+		klog.Errorf("content is not string type: %v", result.GetContent())
+		return nil, fmt.Errorf("content type %T is not string", result.GetContent())
+	}
 
-	if msg.GetOperation() == model.ResponseErrorOperation {
+	if result.GetOperation() == model.ResponseErrorOperation {
 		klog.Errorf("delete volume with error: %s", data)
 		return nil, errors.New(data)
 	}
@@ -212,17 +215,17 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	}
 
 	deleteVolumeResponse := &csi.DeleteVolumeResponse{}
-	err = json.Unmarshal([]byte(decodeBytes), deleteVolumeResponse)
+	err = json.Unmarshal(decodeBytes, deleteVolumeResponse)
 	if err != nil {
 		klog.Errorf("delete volume unmarshal with error: %v", err)
-		return nil, nil
+		return nil, err
 	}
 	klog.V(4).Infof("delete volume response: %v", deleteVolumeResponse)
 	return deleteVolumeResponse, nil
 }
 
 // ControllerPublishVolume issues controller publish volume func
-func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+func (cs *controllerServer) ControllerPublishVolume(_ context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
 	instanceID := req.GetNodeId()
 	volumeID := req.GetVolumeId()
 
@@ -235,7 +238,6 @@ func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	}
 
 	// Build message struct
-	msg := model.NewMessage("")
 	resource, err := buildResource(cs.nodeID,
 		DefaultNamespace,
 		constants.CSIResourceTypeVolume,
@@ -252,11 +254,9 @@ func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 		return nil, err
 	}
 	klog.V(4).Infof("controller publish volume marshal to string: %s", js)
-	msg.Content = js
-	msg.BuildRouter(DefaultReceiveModuleName,
-		GroupResource,
-		resource,
-		constants.CSIOperationTypeControllerPublishVolume)
+	msg := model.NewMessage("").
+		BuildRouter(DefaultReceiveModuleName, GroupResource, resource, constants.CSIOperationTypeControllerPublishVolume).
+		FillBody(js)
 
 	// Marshal message
 	reqData, err := json.Marshal(msg)
@@ -280,9 +280,13 @@ func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	}
 
 	klog.V(4).Infof("controller publish volume result: %v", result)
-	data := result.GetContent().(string)
+	data, ok := result.GetContent().(string)
+	if !ok {
+		klog.Errorf("content is not string type: %v", result.GetContent())
+		return nil, fmt.Errorf("content type %T is not string", result.GetContent())
+	}
 
-	if msg.GetOperation() == model.ResponseErrorOperation {
+	if result.GetOperation() == model.ResponseErrorOperation {
 		klog.Errorf("controller publish volume with error: %s", data)
 		return nil, errors.New(data)
 	}
@@ -294,17 +298,17 @@ func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	}
 
 	controllerPublishVolumeResponse := &csi.ControllerPublishVolumeResponse{}
-	err = json.Unmarshal([]byte(decodeBytes), controllerPublishVolumeResponse)
+	err = json.Unmarshal(decodeBytes, controllerPublishVolumeResponse)
 	if err != nil {
 		klog.Errorf("controller publish volume unmarshal with error: %v", err)
-		return nil, nil
+		return nil, err
 	}
 	klog.V(4).Infof("controller publish volume response: %v", controllerPublishVolumeResponse)
 	return controllerPublishVolumeResponse, nil
 }
 
 // ControllerUnpublishVolume issues controller unpublish volume func
-func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+func (cs *controllerServer) ControllerUnpublishVolume(_ context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
 	instanceID := req.GetNodeId()
 	volumeID := req.GetVolumeId()
 
@@ -317,7 +321,6 @@ func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 	}
 
 	// Build message struct
-	msg := model.NewMessage("")
 	resource, err := buildResource(cs.nodeID,
 		DefaultNamespace,
 		constants.CSIResourceTypeVolume,
@@ -334,11 +337,9 @@ func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 		return nil, err
 	}
 	klog.V(4).Infof("controller Unpublish Volume marshal to string: %s", js)
-	msg.Content = js
-	msg.BuildRouter(DefaultReceiveModuleName,
-		GroupResource,
-		resource,
-		constants.CSIOperationTypeControllerUnpublishVolume)
+	msg := model.NewMessage("").
+		BuildRouter(DefaultReceiveModuleName, GroupResource, resource, constants.CSIOperationTypeControllerUnpublishVolume).
+		FillBody(js)
 
 	// Marshal message
 	reqData, err := json.Marshal(msg)
@@ -362,9 +363,13 @@ func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 	}
 
 	klog.V(4).Infof("controller Unpublish Volume result: %v", result)
-	data := result.GetContent().(string)
+	data, ok := result.GetContent().(string)
+	if !ok {
+		klog.Errorf("content is not string type: %v", result.GetContent())
+		return nil, fmt.Errorf("content type %T is not string", result.GetContent())
+	}
 
-	if msg.GetOperation() == model.ResponseErrorOperation {
+	if result.GetOperation() == model.ResponseErrorOperation {
 		klog.Errorf("controller Unpublish Volume with error: %s", data)
 		return nil, errors.New(data)
 	}
@@ -376,16 +381,16 @@ func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 	}
 
 	controllerUnpublishVolumeResponse := &csi.ControllerUnpublishVolumeResponse{}
-	err = json.Unmarshal([]byte(decodeBytes), controllerUnpublishVolumeResponse)
+	err = json.Unmarshal(decodeBytes, controllerUnpublishVolumeResponse)
 	if err != nil {
 		klog.Errorf("controller Unpublish Volume unmarshal with error: %v", err)
-		return nil, nil
+		return nil, err
 	}
 	klog.V(4).Infof("controller Unpublish Volume response: %v", controllerUnpublishVolumeResponse)
 	return controllerUnpublishVolumeResponse, nil
 }
 
-func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
+func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	// Check arguments
 	if len(req.GetVolumeId()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID cannot be empty")
@@ -409,7 +414,7 @@ func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req 
 	}, nil
 }
 
-func (cs *controllerServer) ControllerGetCapabilities(ctx context.Context, req *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
+func (cs *controllerServer) ControllerGetCapabilities(context.Context, *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	return &csi.ControllerGetCapabilitiesResponse{
 		Capabilities: cs.caps,
 	}, nil
@@ -432,26 +437,34 @@ func getControllerServiceCapabilities(cl []csi.ControllerServiceCapability_RPC_T
 	return csc
 }
 
-func (cs *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+func (cs *controllerServer) GetCapacity(context.Context, *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (cs *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+func (cs *controllerServer) ListVolumes(context.Context, *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+func (cs *controllerServer) ControllerExpandVolume(context.Context, *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "ControllerExpandVolume is not yet implemented")
 }
 
-func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
+func (cs *controllerServer) CreateSnapshot(context.Context, *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "CreateSnapshot is not yet implemented")
 }
 
-func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
+func (cs *controllerServer) DeleteSnapshot(context.Context, *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "DeleteSnapshot is not yet implemented")
 }
 
-func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+func (cs *controllerServer) ListSnapshots(context.Context, *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "ListSnapshots is not yet implemented")
+}
+
+func (cs *controllerServer) ControllerGetVolume(context.Context, *csi.ControllerGetVolumeRequest) (*csi.ControllerGetVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "ControllerGetVolume is not yet implemented")
+}
+
+func (cs *controllerServer) ControllerModifyVolume(ctx context.Context, req *csi.ControllerModifyVolumeRequest) (*csi.ControllerModifyVolumeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ControllerModifyVolume not implemented")
 }

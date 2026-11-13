@@ -2,18 +2,19 @@ package debug
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
-	"github.com/kubeedge/kubeedge/common/constants"
-	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
-	types "github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
-	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/util"
-	"github.com/kubeedge/kubeedge/pkg/apis/componentconfig/edgecore/v1alpha1"
 	"github.com/spf13/cobra"
+
+	"github.com/kubeedge/api/apis/common/constants"
+	apiconsts "github.com/kubeedge/api/apis/common/constants"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
+	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
+	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/util"
+	"github.com/kubeedge/kubeedge/pkg/util/execs"
+	"github.com/kubeedge/kubeedge/pkg/util/files"
 )
 
 var (
@@ -25,13 +26,11 @@ keadm debug collect --output-path .
 `
 )
 
-var pringDeatilFlag = false
+var printDeatilFlag = false
 
-// NewEdgeJoin returns KubeEdge edge join command.
-func NewCollect(out io.Writer, collectOptions *types.ColletcOptions) *cobra.Command {
-	if collectOptions == nil {
-		collectOptions = newCollectOptions()
-	}
+// NewCollect returns KubeEdge collect command.
+func NewCollect() *cobra.Command {
+	collectOptions := newCollectOptions()
 
 	cmd := &cobra.Command{
 		Use:     "collect",
@@ -50,32 +49,30 @@ func NewCollect(out io.Writer, collectOptions *types.ColletcOptions) *cobra.Comm
 	return cmd
 }
 
-// dd flags
-func addCollectOtherFlags(cmd *cobra.Command, collectOptions *types.ColletcOptions) {
-	cmd.Flags().StringVarP(&collectOptions.Config, types.EdgecoreConfig, "c", collectOptions.Config,
-		fmt.Sprintf("Specify configuration file, defalut is %s", common.EdgecoreConfigPath))
+// add flags
+func addCollectOtherFlags(cmd *cobra.Command, collectOptions *common.CollectOptions) {
+	cmd.Flags().StringVarP(&collectOptions.Config, common.EdgecoreConfig, "c", collectOptions.Config,
+		fmt.Sprintf("Specify configuration file, default is %s", apiconsts.EdgecoreConfigPath))
 	cmd.Flags().BoolVarP(&collectOptions.Detail, "detail", "d", false,
 		"Whether to print internal log output")
-	//cmd.Flags().StringVar(&collectOptions.OutputPath, "output-path", collectOptions.OutputPath,
-	//	"Cache data and store data compression packages in a directory that default to the current directory")
 	cmd.Flags().StringVarP(&collectOptions.OutputPath, "output-path", "o", collectOptions.OutputPath,
 		"Cache data and store data compression packages in a directory that default to the current directory")
-	cmd.Flags().StringVarP(&collectOptions.LogPath, "log-path", "l", util.KubeEdgeLogPath,
+	cmd.Flags().StringVarP(&collectOptions.LogPath, "log-path", "l", apiconsts.KubeEdgeLogPath,
 		"Specify log file")
 }
 
 // newCollectOptions returns a struct ready for being used for creating cmd collect flags.
-func newCollectOptions() *types.ColletcOptions {
-	opts := &types.ColletcOptions{}
+func newCollectOptions() *common.CollectOptions {
+	opts := &common.CollectOptions{}
 
-	opts.Config = types.EdgecoreConfigPath
+	opts.Config = apiconsts.EdgecoreConfigPath
 	opts.OutputPath = "."
 	opts.Detail = false
 	return opts
 }
 
-//Start to collect data
-func ExecuteCollect(collectOptions *types.ColletcOptions) error {
+// ExecuteCollect starts to collect data
+func ExecuteCollect(collectOptions *common.CollectOptions) error {
 	//verification parameters
 	err := VerificationParameters(collectOptions)
 	if err != nil {
@@ -99,7 +96,7 @@ func ExecuteCollect(collectOptions *types.ColletcOptions) error {
 	edgeconfig, err := util.ParseEdgecoreConfig(collectOptions.Config)
 
 	if err != nil {
-		fmt.Printf("fail to load edgecore config: %s", err.Error())
+		return fmt.Errorf("fail to load edgecore config: %w", err)
 	}
 	err = collectEdgecoreData(fmt.Sprintf("%s/edgecore", tmpName), edgeconfig, collectOptions)
 	if err != nil {
@@ -107,19 +104,7 @@ func ExecuteCollect(collectOptions *types.ColletcOptions) error {
 	}
 	printDetail("collect edgecore data finish")
 
-	if edgeconfig.Modules.Edged.RuntimeType == "docker" ||
-		edgeconfig.Modules.Edged.RuntimeType == "" {
-		err = collectRuntimeData(fmt.Sprintf("%s/runtime", tmpName))
-		if err != nil {
-			fmt.Printf("collect runtime data failed")
-			return err
-		}
-		printDetail("collect runtime data finish")
-	} else {
-		fmt.Printf("now runtime only support: docker")
-		// TODO
-		// other runtime
-	}
+	// TODO: collectRuntimeData with containerd
 
 	OutputPath := collectOptions.OutputPath
 	zipName := fmt.Sprintf("%s/edge_%s.tar.gz", OutputPath, timenow)
@@ -130,16 +115,19 @@ func ExecuteCollect(collectOptions *types.ColletcOptions) error {
 	printDetail("Data compressed successfully")
 
 	// delete tmp direction
-	os.RemoveAll(tmpName)
+	if err = os.RemoveAll(tmpName); err != nil {
+		return err
+	}
+
 	printDetail("Remove tmp data finish")
 
 	fmt.Printf("Data collected successfully, path: %s\n", zipName)
 	return nil
 }
 
-// verification parameters for debug collect
-func VerificationParameters(collectOptions *types.ColletcOptions) error {
-	if !util.FileExists(collectOptions.Config) {
+// VerificationParameters verifies parameters for debug collect
+func VerificationParameters(collectOptions *common.CollectOptions) error {
+	if !files.FileExists(collectOptions.Config) {
 		return fmt.Errorf("edgecore config %s does not exist", collectOptions.Config)
 	}
 
@@ -147,13 +135,13 @@ func VerificationParameters(collectOptions *types.ColletcOptions) error {
 	if err != nil {
 		return err
 	}
-	if !util.FileExists(path) {
+	if !files.FileExists(path) {
 		return fmt.Errorf("output-path %s does not exist", path)
 	}
 	collectOptions.OutputPath = path
 
 	if collectOptions.Detail {
-		pringDeatilFlag = true
+		printDeatilFlag = true
 	}
 
 	return nil
@@ -174,33 +162,51 @@ func collectSystemData(tmpPath string) error {
 	}
 
 	// arch info
-	ExecuteShell(common.CmdArchInfo, tmpPath)
+	if err = ExecuteShell(common.CmdArchInfo, tmpPath); err != nil {
+		return err
+	}
 	// cpu info
-	CopyFile(common.PathCpuinfo, tmpPath)
+	if err = CopyFile(common.PathCpuinfo, tmpPath); err != nil {
+		return err
+	}
 	// memory info
-	CopyFile(common.PathMemory, tmpPath)
+	if err = CopyFile(common.PathMemory, tmpPath); err != nil {
+		return err
+	}
 	// diskinfo info
-	ExecuteShell(common.CmdDiskInfo, tmpPath)
+	if err = ExecuteShell(common.CmdDiskInfo, tmpPath); err != nil {
+		return err
+	}
 	// hosts info
-	CopyFile(common.PathHosts, tmpPath)
+	if err = CopyFile(common.PathHosts, tmpPath); err != nil {
+		return err
+	}
 	// resolv info
-	CopyFile(common.PathDNSResolv, tmpPath)
+	if err = CopyFile(common.PathDNSResolv, tmpPath); err != nil {
+		return err
+	}
 	// process info
-	ExecuteShell(common.CmdProcessInfo, tmpPath)
+	if err = ExecuteShell(common.CmdProcessInfo, tmpPath); err != nil {
+		return err
+	}
 	// date info
-	ExecuteShell(common.CmdDateInfo, tmpPath)
+	if err = ExecuteShell(common.CmdDateInfo, tmpPath); err != nil {
+		return err
+	}
 	// uptime info
-	ExecuteShell(common.CmdUptimeInfo, tmpPath)
+	if err = ExecuteShell(common.CmdUptimeInfo, tmpPath); err != nil {
+		return err
+	}
 	// history info
-	ExecuteShell(common.CmdHistorynfo, tmpPath)
+	if err = ExecuteShell(common.CmdHistorynfo, tmpPath); err != nil {
+		return err
+	}
 	// network info
-	ExecuteShell(common.CmdNetworkInfo, tmpPath)
-
-	return nil
+	return ExecuteShell(common.CmdNetworkInfo, tmpPath)
 }
 
 // collect edgecore data
-func collectEdgecoreData(tmpPath string, config *v1alpha1.EdgeCoreConfig, ops *types.ColletcOptions) error {
+func collectEdgecoreData(tmpPath string, config *v1alpha2.EdgeCoreConfig, ops *common.CollectOptions) error {
 	printDetail(fmt.Sprintf("create tmp file: %s", tmpPath))
 	err := os.Mkdir(tmpPath, os.ModePerm)
 	if err != nil {
@@ -208,36 +214,57 @@ func collectEdgecoreData(tmpPath string, config *v1alpha1.EdgeCoreConfig, ops *t
 	}
 
 	if config.DataBase.DataSource != "" {
-		CopyFile(config.DataBase.DataSource, tmpPath)
+		if err = CopyFile(config.DataBase.DataSource, tmpPath); err != nil {
+			return err
+		}
 	} else {
-		CopyFile(v1alpha1.DataBaseDataSource, tmpPath)
+		if err = CopyFile(v1alpha2.DataBaseDataSource, tmpPath); err != nil {
+			return err
+		}
 	}
 	if ops.LogPath != "" {
-		CopyFile(ops.LogPath, tmpPath)
+		if err = CopyFile(ops.LogPath, tmpPath); err != nil {
+			return err
+		}
 	} else {
-		CopyFile(util.KubeEdgeLogPath, fmt.Sprintf("%s/log", tmpPath))
+		if err = CopyFile(apiconsts.KubeEdgeLogPath, fmt.Sprintf("%s/log", tmpPath)); err != nil {
+			return err
+		}
 	}
 
-	CopyFile(common.PathEdgecoreService, tmpPath)
-	CopyFile(constants.DefaultConfigDir, tmpPath)
+	if err = CopyFile(common.PathEdgecoreService, tmpPath); err != nil {
+		return err
+	}
+	if err = CopyFile(constants.DefaultConfigDir, tmpPath); err != nil {
+		return err
+	}
 
 	if config.Modules.EdgeHub.TLSCertFile != "" && config.Modules.EdgeHub.TLSPrivateKeyFile != "" {
-		CopyFile(config.Modules.EdgeHub.TLSCertFile, tmpPath)
-		CopyFile(config.Modules.EdgeHub.TLSPrivateKeyFile, tmpPath)
+		if err = CopyFile(config.Modules.EdgeHub.TLSCertFile, tmpPath); err != nil {
+			return err
+		}
+		if err = CopyFile(config.Modules.EdgeHub.TLSPrivateKeyFile, tmpPath); err != nil {
+			return err
+		}
 	} else {
 		printDetail(fmt.Sprintf("not found cert config, use default path: %s", tmpPath))
-		CopyFile(common.DefaultCertPath+"/", tmpPath)
+		if err = CopyFile(apiconsts.DefaultCertPath+"/", tmpPath); err != nil {
+			return err
+		}
 	}
 
 	if config.Modules.EdgeHub.TLSCAFile != "" {
-		CopyFile(config.Modules.EdgeHub.TLSCAFile, tmpPath)
+		if err = CopyFile(config.Modules.EdgeHub.TLSCAFile, tmpPath); err != nil {
+			return err
+		}
 	} else {
 		printDetail(fmt.Sprintf("not found ca config, use default path: %s", tmpPath))
-		CopyFile(constants.DefaultCAKeyFile, tmpPath)
+		if err = CopyFile(constants.DefaultCAKeyFile, tmpPath); err != nil {
+			return err
+		}
 	}
 
-	ExecuteShell(common.CmdEdgecoreVersion, tmpPath)
-	return nil
+	return ExecuteShell(common.CmdEdgecoreVersion, tmpPath)
 }
 
 // collect runtime/docker data
@@ -248,39 +275,32 @@ func collectRuntimeData(tmpPath string) error {
 		return err
 	}
 
-	CopyFile(common.PathDockerService, tmpPath)
-	ExecuteShell(common.CmdDockerVersion, tmpPath)
-	ExecuteShell(common.CmdDockerInfo, tmpPath)
-	ExecuteShell(common.CmdDockerImageInfo, tmpPath)
-	ExecuteShell(common.CmdContainerInfo, tmpPath)
-	ExecuteShell(common.CmdContainerLogInfo, tmpPath)
+	if err = CopyFile(common.PathDockerService, tmpPath); err != nil {
+		return err
+	}
+
+	cmdStrings := []string{common.CmdDockerVersion, common.CmdDockerInfo, common.CmdDockerImageInfo, common.CmdContainerInfo, common.CmdContainerLogInfo}
+	for _, cmd := range cmdStrings {
+		if err = ExecuteShell(cmd, tmpPath); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func CopyFile(pathSrc, tmpPath string) {
-	c := fmt.Sprintf(common.CmdCopyFile, pathSrc, tmpPath)
-	printDetail(fmt.Sprintf("Copy File: %s", c))
-	cmd := exec.Command("sh", "-c", c)
-	_, err := cmd.Output()
-	if err != nil {
-		fmt.Printf("fail to copy file:  %s", c)
-		fmt.Printf("Output: %s\n", err.Error())
-	}
+func CopyFile(pathSrc, tmpPath string) error {
+	cmd := execs.NewCommand(fmt.Sprintf(common.CmdCopyFile, pathSrc, tmpPath))
+	return cmd.Exec()
 }
 
-func ExecuteShell(cmdStr string, tmpPath string) {
-	c := fmt.Sprintf(cmdStr, tmpPath)
-	printDetail(fmt.Sprintf("Execute Shell: %s", c))
-	cmd := exec.Command("sh", "-c", c)
-	_, err := cmd.Output()
-	if err != nil {
-		fmt.Printf("fail to execute Shell: %s\n", c)
-		fmt.Printf("Output: %s\n", err.Error())
-	}
+func ExecuteShell(cmdStr string, tmpPath string) error {
+	cmd := execs.NewCommand(fmt.Sprintf(cmdStr, tmpPath))
+	return cmd.Exec()
 }
 
 func printDetail(msg string) {
-	if pringDeatilFlag {
+	if printDeatilFlag {
 		fmt.Println(msg)
 	}
 }

@@ -1,0 +1,36 @@
+FROM golang:1.25.14-bookworm AS builder
+
+WORKDIR /build
+
+ENV GO111MODULE=on \
+    GOPROXY=https://goproxy.cn,direct
+
+COPY . .
+
+RUN apt-get update && \
+    apt-get install -y bzip2 curl gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-arm-linux-gnueabi libc6-dev-armel-cross libva-dev libva-drm2 libx11-dev libvdpau-dev libxext-dev libsdl1.2-dev libxcb1-dev libxau-dev libxdmcp-dev yasm
+
+RUN curl -sLO https://ffmpeg.org/releases/ffmpeg-4.1.6.tar.bz2 && \
+    tar -jx --strip-components=1 -f ffmpeg-4.1.6.tar.bz2 &&  \
+    ./configure &&  make && \
+    make install
+
+RUN GOOS=linux go build -o main cmd/main.go
+
+# Match the builder's libc for the CGO-enabled streaming binary.
+FROM debian:bookworm
+
+RUN mkdir -p kubeedge
+
+RUN apt-get update && \
+    apt-get install -y build-essential pkg-config bzip2 curl gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-arm-linux-gnueabi libc6-dev-armel-cross libva-dev libva-drm2 libx11-dev libvdpau-dev libxext-dev libsdl1.2-dev libxcb1-dev libxau-dev libxdmcp-dev yasm
+
+RUN curl -sLO https://ffmpeg.org/releases/ffmpeg-4.1.6.tar.bz2 && \
+    tar -jx --strip-components=1 -f ffmpeg-4.1.6.tar.bz2 &&  \
+    ./configure &&  make && \
+    make install
+
+COPY --from=builder /build/main kubeedge/
+COPY ./config.yaml kubeedge/
+
+WORKDIR kubeedge

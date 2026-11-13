@@ -17,39 +17,96 @@ limitations under the License.
 package common
 
 import (
-	"time"
+	"fmt"
+	"strings"
 
 	"github.com/blang/semver"
 )
 
-//InitOptions has the kubeedge cloud init information filled by CLI
-type InitOptions struct {
-	KubeEdgeVersion  string
+// CloudInitUpdateBase defines common flags for init and upgrade in the cloud.
+type CloudInitUpdateBase struct {
 	KubeConfig       string
-	Master           string
+	KubeEdgeVersion  string
 	AdvertiseAddress string
-	DNS              string
-	TarballPath      string
+	Profile          string
+	ExternalHelmRoot string
+	Sets             []string
+	ValueFiles       []string
+	Force            bool
+	DryRun           bool
+	PrintFinalValues bool
+	ImageRepository  string
 }
 
-//JoinOptions has the kubeedge cloud init information filled by CLI
+const requiredSetSplitLen = 2
+
+// GetValidSets returns a valid sets, if the item is an invalid key-value,
+// it is removed from the sets and print the error message.
+func (b CloudInitUpdateBase) GetValidSets() []string {
+	if b.Sets == nil {
+		return nil
+	}
+	res := make([]string, 0, len(b.Sets))
+	for _, s := range b.Sets {
+		p := strings.SplitN(s, "=", requiredSetSplitLen)
+		if len(p) != requiredSetSplitLen {
+			fmt.Println("Unsupported sets flag: ", s)
+			continue
+		}
+		res = append(res, s)
+	}
+	return res
+}
+
+// HasSets returns the key is in the sets
+func (b CloudInitUpdateBase) HasSets(key string) bool {
+	for _, kv := range b.Sets {
+		p := strings.SplitN(kv, "=", requiredSetSplitLen)
+		if len(p) == requiredSetSplitLen && p[0] == key {
+			return true
+		}
+	}
+	return false
+}
+
+// InitOptions defines cloud init flags
+type InitOptions struct {
+	Manifests           string
+	SkipCRDs            bool
+	SkipPreflightChecks bool
+	CloudInitUpdateBase
+}
+
+// CloudUpgradeOptions defines cloud upgrade flags
+type CloudUpgradeOptions struct {
+	ReuseValues bool
+	CloudInitUpdateBase
+}
+
+// JoinOptions defines edge join flags
 type JoinOptions struct {
-	InitOptions
+	KubeEdgeVersion       string
 	CertPath              string
 	CloudCoreIPPort       string
 	EdgeNodeName          string
-	RuntimeType           string
 	RemoteRuntimeEndpoint string
 	Token                 string
 	CertPort              string
 	CGroupDriver          string
+	Labels                []string
+	Sets                  []string
+	PreRun                string
+	PostRun               string
+	ImageRepository       string
+	HubProtocol           string
+	TarballPath           string
+	JoinOSExtOptions
 }
 
 type CheckOptions struct {
 	Domain         string
 	DNSIP          string
 	IP             string
-	Runtime        string
 	Timeout        int
 	CloudHubServer string
 	EdgecoreServer string
@@ -62,8 +119,8 @@ type CheckObject struct {
 	Cmd  string
 }
 
-// ColletcOptions has the kubeedge debug colletc information filled by CLI
-type ColletcOptions struct {
+// CollectOptions has the kubeedge debug collect information filled by CLI
+type CollectOptions struct {
 	Config     string
 	OutputPath string
 	Detail     bool
@@ -73,6 +130,9 @@ type ColletcOptions struct {
 type ResetOptions struct {
 	Kubeconfig string
 	Force      bool
+	Endpoint   string
+	PreRun     string
+	PostRun    string
 }
 
 type GettokenOptions struct {
@@ -92,30 +152,82 @@ type DiagnoseObject struct {
 	Use  string
 }
 
-//InstallState enum set used for verifying a tool version is installed in host
-type InstallState uint8
+// BatchProcessOptions has the kubeedge batch process information filled by CLI
+type BatchProcessOptions struct {
+	ConfigFile string
+}
 
-//Difference enum values for type InstallState
-const (
-	NewInstallRequired InstallState = iota
-	AlreadySameVersionExist
-	ExitError
-)
+// Config defines the batch-process config file format
+type Config struct {
+	Keadm     Keadm  `yaml:"keadm"`
+	Nodes     []Node `yaml:"nodes"`
+	MaxRunNum int    `yaml:"maxRunNum"`
+}
 
-//ModuleRunning is defined to know the running status of KubeEdge components
+// Keadm defines the keadm config file format
+type Keadm struct {
+	Download          Download          `yaml:"download"`
+	KeadmVersion      string            `yaml:"keadmVersion"`
+	ArchGroup         []string          `yaml:"archGroup"`
+	OfflinePackageDir *string           `yaml:"offlinePackageDir,omitempty"`
+	CmdTplArgs        map[string]string `yaml:"cmdTplArgs,omitempty"`
+	KeadmBinDir       *string           `yaml:"keadmBinDir,omitempty"`
+}
+
+// Download defines the url and enable flag
+type Download struct {
+	URL    *string `yaml:"url,omitempty"`
+	Enable *bool   `yaml:"enable"`
+}
+
+// Node defines the node information used in batch-process config file
+type Node struct {
+	NodeName    string  `yaml:"nodeName"`
+	KeadmCmd    string  `yaml:"keadmCmd"`
+	CopyFrom    *string `yaml:"copyFrom,omitempty"`
+	SSH         SSH     `yaml:"ssh"`
+	KeadmBinDir *string `yaml:"keadmBinDir,omitempty"`
+}
+
+// SSH defines the ssh information used in batch-process config file
+type SSH struct {
+	IP       string     `yaml:"ip"`
+	Username string     `yaml:"username"`
+	Port     *int       `yaml:"port,omitempty"`
+	Auth     AuthConfig `yaml:"auth"`
+}
+
+// AuthConfig defines the auth information used in batch-process config file
+type AuthConfig struct {
+	Type           string          `yaml:"type"`
+	PasswordAuth   *PasswordAuth   `yaml:"passwordAuth,omitempty"`
+	PrivateKeyAuth *PrivateKeyAuth `yaml:"privateKeyAuth,omitempty"`
+}
+
+// PasswordAuth is defined to know the password auth information used in batch-process config file
+type PasswordAuth struct {
+	Password string `yaml:"password"`
+}
+
+// PrivateKeyAuth is defined to know the private key auth information used in batch-process config file
+type PrivateKeyAuth struct {
+	PrivateKeyPath string `yaml:"privateKeyPath"`
+}
+
+// ModuleRunning is defined to know the running status of KubeEdge components
 type ModuleRunning uint8
 
-//Different possible values for ModuleRunning type
+// Different possible values for ModuleRunning type
 const (
 	NoneRunning ModuleRunning = iota
 	KubeEdgeCloudRunning
 	KubeEdgeEdgeRunning
 )
 
-//ModuleRunning is defined to know the running status of KubeEdge components
+// ComponentType is the type of KubeEdge components, cloudcore or edgecore
 type ComponentType string
 
-//All Component type
+// All Component type
 const (
 	CloudCore ComponentType = "cloudcore"
 	EdgeCore  ComponentType = "edgecore"
@@ -125,15 +237,16 @@ const (
 type InstallOptions struct {
 	ComponentType ComponentType
 	TarballPath   string
+	DownloadRepo  string
 }
 
-//ToolsInstaller interface for tools with install and teardown methods.
+// ToolsInstaller interface for tools with install and teardown methods.
 type ToolsInstaller interface {
 	InstallTools() error
 	TearDown() error
 }
 
-//OSTypeInstaller interface for methods to be executed over a specified OS distribution type
+// OSTypeInstaller interface for methods to be executed over a specified OS distribution type
 type OSTypeInstaller interface {
 	InstallMQTT() error
 	IsK8SComponentInstalled(string, string) error
@@ -142,173 +255,10 @@ type OSTypeInstaller interface {
 	RunEdgeCore() error
 	KillKubeEdgeBinary(string) error
 	IsKubeEdgeProcessRunning(string) (bool, error)
-	IsProcessRunning(string) (bool, error)
 }
 
-//FlagData stores value and default value of the flags used in this command
+// FlagData stores value and default value of the flags used in this command
 type FlagData struct {
 	Val    interface{}
 	DefVal interface{}
-}
-
-//NodeMetaDataLabels defines
-type NodeMetaDataLabels struct {
-	Name string
-}
-
-//NodeMetaDataSt defines
-type NodeMetaDataSt struct {
-	Name   string
-	Labels NodeMetaDataLabels
-}
-
-//NodeDefinition defines
-type NodeDefinition struct {
-	Kind       string
-	APIVersion string
-	MetaData   NodeMetaDataSt
-}
-
-//ControllerKubeConfig has all the below fields; (data taken from "github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/config/kube.go")
-type ControllerKubeConfig struct {
-	//Master is the url of edge master(kube api server)
-	Master string `yaml:"master"`
-	//Namespace is the namespace to watch(default is NamespaceAll)
-	Namespace string `yaml:"namespace"`
-	//ContentType is the content type communicate with edge master(default is "application/vnd.kubernetes.protobuf")
-	ContentType string `yaml:"content_type"`
-	//QPS is the QPS communicate with edge master(default is 100.0)
-	QPS uint `yaml:"qps"`
-	//Burst default is 10
-	Burst uint `yaml:"burst"`
-	//NodeFrequency is the time duration for update node status(default is 20s)
-	NodeUpdateFrequency time.Duration `yaml:"node_update_frequency"`
-	//KubeConfig is the config used connect to edge master
-	KubeConfig string `yaml:"kubeconfig"`
-}
-
-//EdgeControllerSt consists information to access api-server @ master
-type EdgeControllerSt struct {
-	Kube ControllerKubeConfig `yaml:"kube"`
-}
-
-//CloudHubSt represents configuration options for http access
-type CloudHubSt struct {
-	IPAddress         string `yaml:"address"`
-	Port              uint16 `yaml:"port"`
-	CA                string `yaml:"ca"`
-	Cert              string `yaml:"cert"`
-	Key               string `yaml:"key"`
-	KeepAliveInterval uint32 `yaml:"keepalive-interval"`
-	WriteTimeout      uint32 `yaml:"write-timeout"`
-	NodeLimit         uint32 `yaml:"node-limit"`
-}
-
-//DeviceControllerSt consists information to access  api-server @ master for Device CRD
-type DeviceControllerSt struct {
-	Kube ControllerKubeConfig `yaml:"kube"`
-}
-
-//CloudCoreYaml has the edgecontroller yaml configuration/content which shall be written in conf/controller.yaml for cloud component
-type CloudCoreYaml struct {
-	EdgeController   EdgeControllerSt   `yaml:"controller"`
-	CloudHub         CloudHubSt         `yaml:"cloudhub"`
-	DeviceController DeviceControllerSt `yaml:"devicecontroller"`
-}
-
-//ModulesSt contains the list of modules which shall be added to cloudcore and edgecore respectively during init
-type ModulesSt struct {
-	Enabled []string `yaml:"enabled"`
-}
-
-//ModulesYaml is the module list which shall be written in conf/modules.yaml for cloud and edge component
-type ModulesYaml struct {
-	Modules ModulesSt `yaml:"modules"`
-}
-
-//MQTTMode = # 0: internal mqtt broker enable only. 1: internal and external mqtt broker enable. 2: external mqtt broker enable only.
-type MQTTMode uint8
-
-//Different message exchange mode supported in KubeEdge using MQTT
-const (
-	MQTTInternalMode MQTTMode = iota
-	MQTTInternalExternalMode
-	MQTTExternalMode
-)
-
-//MQTTQoSType = # 0: QOSAtMostOnce, 1: QOSAtLeastOnce, 2: QOSExactlyOnce.
-type MQTTQoSType uint8
-
-//Different MQTT QoS
-const (
-	MQTTQoSAtMostOnce MQTTQoSType = iota
-	MQTTQoSAtLeastOnce
-	MQTTQoSExactlyOnce
-)
-
-//MQTTConfig contains MQTT specific config to use MQTT broker
-type MQTTConfig struct {
-	Server           string      `yaml:"server"`
-	InternalServer   string      `yaml:"internal-server"`
-	Mode             MQTTMode    `yaml:"mode"`
-	QOS              MQTTQoSType `yaml:"qos"`
-	Retain           bool        `yaml:"retain"`
-	SessionQueueSize uint64      `yaml:"session-queue-size"`
-}
-
-//WebSocketSt contains websocket configurations to communicate between CloudHub and EdgeHub
-type WebSocketSt struct {
-	URL              string `yaml:"url"`
-	CertFile         string `yaml:"certfile"`
-	KeyFile          string `yaml:"keyfile"`
-	HandshakeTimeout uint16 `yaml:"handshake-timeout"`
-	WriteDeadline    uint16 `yaml:"write-deadline"`
-	ReadDeadline     uint16 `yaml:"read-deadline"`
-}
-
-//ControllerSt contain edgecontroller config which edge component uses
-type ControllerSt struct {
-	Heartbeat uint32 `yaml:"heartbeat"`
-	ProjectID string `yaml:"project-id"`
-	NodeID    string `yaml:"node-id"`
-}
-
-//EdgeDSt contains configuration required by edged module in KubeEdge component
-type EdgeDSt struct {
-	RegisterNodeNamespace             string `yaml:"register-node-namespace"`
-	HostnameOverride                  string `yaml:"hostname-override"`
-	NodeStatusUpdateFrequency         uint16 `yaml:"node-status-update-frequency"`
-	DevicePluginEnabled               bool   `yaml:"device-plugin-enabled"`
-	GPUPluginEnabled                  bool   `yaml:"gpu-plugin-enabled"`
-	ImageGCHighThreshold              uint16 `yaml:"image-gc-high-threshold"`
-	ImageGCLowThreshold               uint16 `yaml:"image-gc-low-threshold"`
-	MaximumDeadContainersPerContainer uint16 `yaml:"maximum-dead-containers-per-container"`
-	DockerAddress                     string `yaml:"docker-address"`
-	EdgedMemory                       uint16 `yaml:"edged-memory-capacity-bytes"`
-	RuntimeType                       string `yaml:"runtime-type"`
-	RuntimeEndpoint                   string `yaml:"remote-runtime-endpoint"`
-	ImageEndpoint                     string `yaml:"remote-image-endpoint"`
-	RequestTimeout                    uint16 `yaml:"runtime-request-timeout"`
-	PodSandboxImage                   string `yaml:"podsandbox-image"`
-	ConcurrentConsumers               int    `yaml:"concurrent-consumers"`
-}
-type Mesh struct {
-	LB LoadBalance `yaml:"loadbalance"`
-}
-type LoadBalance struct {
-	StrategyName string `yaml:"strategy-name"`
-}
-
-//EdgeHubSt contains both websocket and controller config
-type EdgeHubSt struct {
-	WebSocket  WebSocketSt  `yaml:"websocket"`
-	Controller ControllerSt `yaml:"controller"`
-}
-
-//EdgeYamlSt content is written into conf/edge.yaml
-type EdgeYamlSt struct {
-	MQTT    MQTTConfig `yaml:"mqtt"`
-	EdgeHub EdgeHubSt  `yaml:"edgehub"`
-	EdgeD   EdgeDSt    `yaml:"edged"`
-	Mesh    Mesh       `yaml:"mesh"`
 }

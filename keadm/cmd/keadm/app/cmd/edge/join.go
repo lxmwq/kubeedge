@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The KubeEdge Authors.
+Copyright 2022 The KubeEdge Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,23 +14,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cmd
+package edge
 
 import (
+	"crypto/tls"
 	"fmt"
-	"io"
+	"net"
+	"net/http"
+	"os"
 	"strings"
 
-	"github.com/blang/semver"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 
-	types "github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
+	"github.com/kubeedge/api/apis/common/constants"
+	"github.com/kubeedge/api/apis/componentconfig/edgecore/v1alpha2"
+	apiutil "github.com/kubeedge/api/apis/util"
+	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/common"
 	"github.com/kubeedge/kubeedge/keadm/cmd/keadm/app/cmd/util"
+	"github.com/kubeedge/kubeedge/pkg/viaduct/pkg/api"
 )
 
 var (
-	edgeJoinLongDescription = `
+	edgeJoinDescription = `
 "keadm join" command bootstraps KubeEdge's worker node (at the edge) component.
 It will also connect with cloud component to receive
 further instructions and forward telemetry data from
@@ -42,146 +48,177 @@ keadm join --cloudcore-ipport=<ip:port address> --edgenode-name=<unique string a
   - For this command --cloudcore-ipport flag is a required option
   - This command will download and install the default version of pre-requisites and KubeEdge
 
-keadm join --cloudcore-ipport=10.20.30.40:10000 --edgenode-name=testing123 --kubeedge-version=%s
+keadm join --cloudcore-ipport=10.20.30.40:10000 --edgenode-name=testing123 --kubeedge-version=v` + common.DefaultKubeEdgeVersion + `
 `
 )
 
-// NewEdgeJoin returns KubeEdge edge join command.
-func NewEdgeJoin(out io.Writer, joinOptions *types.JoinOptions) *cobra.Command {
-	if joinOptions == nil {
-		joinOptions = newJoinOptions()
-	}
+var edgeCoreConfig *v1alpha2.EdgeCoreConfig
 
-	tools := make(map[string]types.ToolsInstaller)
-	flagVals := make(map[string]types.FlagData)
-
+func NewEdgeJoin() *cobra.Command {
+	joinOptions := newOption()
+	step := common.NewStep()
 	cmd := &cobra.Command{
-		Use:     "join",
-		Short:   "Bootstraps edge component. Checks and install (if required) the pre-requisites. Execute it on any edge node machine you wish to join",
-		Long:    edgeJoinLongDescription,
-		Example: fmt.Sprintf(edgeJoinExample, types.DefaultKubeEdgeVersion),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			//Visit all the flags and store their values and default values.
-			checkFlags := func(f *pflag.Flag) {
-				util.AddToolVals(f, flagVals)
+		Use:          "join",
+		Short:        "Bootstraps edge component. Checks and install (if required) the pre-requisites. Execute it on any edge node machine you wish to join",
+		Long:         edgeJoinDescription,
+		Example:      edgeJoinExample,
+		SilenceUsage: true,
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			if joinOptions.PreRun != "" {
+				step.Printf("Executing pre-run script: %s\n", joinOptions.PreRun)
+				if err := util.RunScript(joinOptions.PreRun); err != nil {
+					return err
+				}
 			}
-			cmd.Flags().VisitAll(checkFlags)
-
-			err := Add2ToolsList(tools, flagVals, joinOptions)
+			step.Printf("Check KubeEdge edgecore process status")
+			running, err := util.IsKubeEdgeProcessRunning(constants.KubeEdgeBinaryName)
 			if err != nil {
-				return err
+				return fmt.Errorf("check KubeEdge edgecore process status failed: %v", err)
 			}
-			return Execute(tools)
+			if running {
+				return fmt.Errorf("EdgeCore is already running on this node, please run reset to clean up first")
+			}
+
+			step.Printf("Check if the management directory is clean")
+			if _, err := os.Stat(constants.KubeEdgePath); err != nil {
+				if !os.IsNotExist(err) {
+					return fmt.Errorf("Stat management directory %s failed: %v", constants.KubeEdgePath, err)
+				}
+			} else {
+				entries, err := os.ReadDir(constants.KubeEdgePath)
+				if err != nil {
+					return fmt.Errorf("read management directory %s failed: %v", constants.KubeEdgePath, err)
+				}
+				if len(entries) > 0 {
+					return fmt.Errorf("the management directory %s is not clean, please remove it first", constants.KubeEdgePath)
+				}
+			}
+
+			step.Printf("Check if the node name is valid")
+			return isNodeExist(joinOptions)
+		},
+		RunE: func(_ *cobra.Command, _ []string) error {
+			ver, err := util.GetCurrentVersion(joinOptions.KubeEdgeVersion)
+			if err != nil {
+				return fmt.Errorf("edge node join failed: %v", err)
+			}
+			joinOptions.KubeEdgeVersion = ver
+
+			if err := join(joinOptions, step); err != nil {
+				return fmt.Errorf("edge node join failed: %v", err)
+			}
+
+			return nil
+		},
+		PostRunE: func(_ *cobra.Command, _ []string) error {
+			if joinOptions.PostRun != "" {
+				fmt.Printf("Executing post-run script: %s\n", joinOptions.PostRun)
+				if err := util.RunScript(joinOptions.PostRun); err != nil {
+					fmt.Printf("Execute post-run script: %s failed: %v\n", joinOptions.PostRun, err)
+				}
+			}
+			return nil
 		},
 	}
 
-	addJoinOtherFlags(cmd, joinOptions)
+	AddJoinOtherFlags(cmd, joinOptions)
 	return cmd
 }
 
-func addJoinOtherFlags(cmd *cobra.Command, joinOptions *types.JoinOptions) {
-	cmd.Flags().StringVar(&joinOptions.KubeEdgeVersion, types.KubeEdgeVersion, joinOptions.KubeEdgeVersion,
-		"Use this key to download and use the required KubeEdge version")
-	cmd.Flags().Lookup(types.KubeEdgeVersion).NoOptDefVal = joinOptions.KubeEdgeVersion
-
-	cmd.Flags().StringVar(&joinOptions.CGroupDriver, types.CGroupDriver, joinOptions.CGroupDriver,
-		"CGroupDriver that uses to manipulate cgroups on the host (cgroupfs or systemd), the default value is cgroupfs")
-
-	cmd.Flags().StringVar(&joinOptions.CertPath, types.CertPath, joinOptions.CertPath,
-		fmt.Sprintf("The certPath used by edgecore, the default value is %s", types.DefaultCertPath))
-
-	cmd.Flags().StringVarP(&joinOptions.CloudCoreIPPort, types.CloudCoreIPPort, "e", joinOptions.CloudCoreIPPort,
-		"IP:Port address of KubeEdge CloudCore")
-
-	if err := cmd.MarkFlagRequired(types.CloudCoreIPPort); err != nil {
-		fmt.Printf("mark flag required failed with error: %v\n", err)
-	}
-
-	cmd.Flags().StringVarP(&joinOptions.RuntimeType, types.RuntimeType, "r", joinOptions.RuntimeType,
-		"Container runtime type")
-
-	cmd.Flags().StringVarP(&joinOptions.EdgeNodeName, types.EdgeNodeName, "i", joinOptions.EdgeNodeName,
-		"KubeEdge Node unique identification string, If flag not used then the command will generate a unique id on its own")
-
-	cmd.Flags().StringVarP(&joinOptions.RemoteRuntimeEndpoint, types.RemoteRuntimeEndpoint, "p", joinOptions.RemoteRuntimeEndpoint,
-		"KubeEdge Edge Node RemoteRuntimeEndpoint string, If flag not set, it will use unix:///var/run/dockershim.sock")
-
-	cmd.Flags().StringVarP(&joinOptions.Token, types.Token, "t", joinOptions.Token,
-		"Used for edge to apply for the certificate")
-
-	cmd.Flags().StringVarP(&joinOptions.CertPort, types.CertPort, "s", joinOptions.CertPort,
-		"The port where to apply for the edge certificate")
-
-	cmd.Flags().StringVar(&joinOptions.TarballPath, types.TarballPath, joinOptions.TarballPath,
-		"Use this key to set the temp directory path for KubeEdge tarball, if not exist, download it")
+func newOption() *common.JoinOptions {
+	joinOptions := &common.JoinOptions{}
+	joinOptions.CGroupDriver = v1alpha2.CGroupDriverCGroupFS
+	joinOptions.CertPath = constants.DefaultCertPath
+	joinOptions.RemoteRuntimeEndpoint = constants.DefaultRemoteRuntimeEndpoint
+	joinOptions.HubProtocol = api.ProtocolTypeWS
+	return joinOptions
 }
 
-// newJoinOptions returns a struct ready for being used for creating cmd join flags.
-func newJoinOptions() *types.JoinOptions {
-	opts := &types.JoinOptions{}
-	opts.CertPath = types.DefaultCertPath
-
-	return opts
-}
-
-//Add2ToolsList Reads the flagData (containing val and default val) and join options to fill the list of tools.
-func Add2ToolsList(toolList map[string]types.ToolsInstaller, flagData map[string]types.FlagData, joinOptions *types.JoinOptions) error {
-	var kubeVer string
-
-	flgData, ok := flagData[types.KubeEdgeVersion]
-	if ok {
-		kubeVer = util.CheckIfAvailable(flgData.Val.(string), flgData.DefVal.(string))
+func createDirs() error {
+	// Create management directory
+	if err := os.MkdirAll(constants.KubeEdgePath, os.ModePerm); err != nil {
+		return fmt.Errorf("create %s folder path failed: %v", constants.KubeEdgePath, err)
 	}
-	if kubeVer == "" {
-		var latestVersion string
-		for i := 0; i < util.RetryTimes; i++ {
-			version, err := util.GetLatestVersion()
-			if err != nil {
-				fmt.Println("Failed to get the latest KubeEdge release version")
-				continue
-			}
-			if len(version) > 0 {
-				kubeVer = strings.TrimPrefix(version, "v")
-				latestVersion = version
-				break
-			}
-		}
-		if len(latestVersion) == 0 {
-			fmt.Println("Failed to get the latest KubeEdge release version, will use default version")
-			kubeVer = types.DefaultKubeEdgeVersion
-		}
+	// Create config directory
+	if err := os.MkdirAll(util.KubeEdgeConfigDir, os.ModePerm); err != nil {
+		return fmt.Errorf("create %s folder path failed: %v", util.KubeEdgeConfigDir, err)
 	}
-	toolList["KubeEdge"] = &util.KubeEdgeInstTool{
-		Common: util.Common{
-			ToolVersion: semver.MustParse(kubeVer),
-		},
-		CloudCoreIP:           joinOptions.CloudCoreIPPort,
-		EdgeNodeName:          joinOptions.EdgeNodeName,
-		RuntimeType:           joinOptions.RuntimeType,
-		CertPath:              joinOptions.CertPath,
-		RemoteRuntimeEndpoint: joinOptions.RemoteRuntimeEndpoint,
-		Token:                 joinOptions.Token,
-		CertPort:              joinOptions.CertPort,
-		CGroupDriver:          joinOptions.CGroupDriver,
-		TarballPath:           joinOptions.TarballPath,
+	// Create log directory
+	if err := os.MkdirAll(constants.KubeEdgeLogPath, os.ModePerm); err != nil {
+		return fmt.Errorf("create %s folder path failed: %v", constants.KubeEdgeLogPath, err)
 	}
-
-	toolList["MQTT"] = &util.MQTTInstTool{}
+	// Create resource directory
+	if err := os.MkdirAll(common.KubeEdgeSocketPath, os.ModePerm); err != nil {
+		return fmt.Errorf("create %s folder path failed: %v", common.KubeEdgeSocketPath, err)
+	}
 	return nil
 }
 
-//Execute the installation for each tool and start edgecore
-func Execute(toolList map[string]types.ToolsInstaller) error {
-	//Install all the required pre-requisite tools
-	for name, tool := range toolList {
-		if name != "KubeEdge" {
-			err := tool.InstallTools()
-			if err != nil {
-				return err
-			}
+func setEdgedNodeLabels(opt *common.JoinOptions) map[string]string {
+	labelsMap := make(map[string]string)
+	for _, label := range opt.Labels {
+		arr := strings.SplitN(label, "=", 2)
+		if arr[0] == "" {
+			continue
+		}
+
+		if len(arr) > 1 {
+			labelsMap[arr[0]] = arr[1]
+		} else {
+			labelsMap[arr[0]] = ""
 		}
 	}
+	return labelsMap
+}
 
-	//Install and Start KubeEdge Node
-	return toolList["KubeEdge"].InstallTools()
+func createBootstrapFile(opt *common.JoinOptions) error {
+	bootstrapFile := constants.BootstrapFile
+	_, err := os.Create(bootstrapFile)
+	if err != nil {
+		return err
+	}
+
+	// write token to bootstrap-edgecore.conf file
+	token := []byte(opt.Token)
+	return os.WriteFile(bootstrapFile, token, 0640)
+}
+
+func isNodeExist(opt *common.JoinOptions) error {
+	var nodeName string
+	if opt.EdgeNodeName != "" {
+		nodeName = opt.EdgeNodeName
+	} else {
+		nodeName = apiutil.GetHostname()
+	}
+
+	queryPara := fmt.Sprintf("/node/%s", nodeName)
+	host, _, err := net.SplitHostPort(opt.CloudCoreIPPort)
+	if err != nil {
+		return errors.Errorf("get current host and port failed: %v", err)
+	}
+
+	var url string
+	if opt.CertPort != "" {
+		url = "https://" + net.JoinHostPort(host, opt.CertPort) + queryPara
+	} else {
+		url = "https://" + net.JoinHostPort(host, "10002") + queryPara
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return errors.Errorf("error making request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
+	return errors.New("node already exists or internal error occurred, cannot register again")
 }

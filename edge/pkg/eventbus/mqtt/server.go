@@ -17,22 +17,16 @@ limitations under the License.
 package mqtt
 
 import (
-	"encoding/base64"
-	"fmt"
-	"strings"
-
 	"github.com/256dpi/gomqtt/broker"
 	"github.com/256dpi/gomqtt/packet"
 	"github.com/256dpi/gomqtt/topic"
 	"github.com/256dpi/gomqtt/transport"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
-	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
-	"github.com/kubeedge/beehive/pkg/core/model"
-	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
+	"github.com/kubeedge/kubeedge/edge/pkg/metamanager/dao/dbclient"
 )
 
-//Server serve as an internal mqtt broker.
+// Server serve as an internal mqtt broker.
 type Server struct {
 	// Internal mqtt url
 	url string
@@ -100,24 +94,8 @@ func (m *Server) Run() error {
 
 // onSubscribe will be called if the topic is matched in topic tree.
 func (m *Server) onSubscribe(msg *packet.Message) {
-	// for "$hw/events/device/+/twin/+", "$hw/events/node/+/membership/get", send to twin
-	// for other, send to hub
-	// for "SYS/dis/upload_records", no need to base64 topic
-	var target string
-	resource := base64.URLEncoding.EncodeToString([]byte(msg.Topic))
-	if strings.HasPrefix(msg.Topic, "$hw/events/device") || strings.HasPrefix(msg.Topic, "$hw/events/node") {
-		target = modules.TwinGroup
-	} else {
-		target = modules.HubGroup
-		if msg.Topic == "SYS/dis/upload_records" {
-			resource = "SYS/dis/upload_records"
-		}
-	}
-	// routing key will be $hw.<project_id>.events.user.bus.response.cluster.<cluster_id>.node.<node_id>.<base64_topic>
-	message := model.NewMessage("").BuildRouter(modules.BusGroup, "user",
-		resource, "response").FillBody(string(msg.Payload))
-	klog.Info(fmt.Sprintf("Received msg from mqttserver, deliver to %s with resource %s", target, resource))
-	beehiveContext.SendToGroup(target, *message)
+	klog.Infof("OnSubscribe receive msg from topic: %s", msg.Topic)
+	NewMessageMux().Dispatch(msg.Topic, msg.Payload)
 }
 
 // InitInternalTopics sets internal topics to server by default.
@@ -126,6 +104,19 @@ func (m *Server) InitInternalTopics() {
 		m.tree.Set(v, packet.Subscription{Topic: v, QOS: packet.QOS(m.qos)})
 		klog.Infof("Subscribe internal topic to %s", v)
 	}
+	topics, err := dbclient.NewEventBusService().QueryAllTopics()
+	if err != nil {
+		klog.Errorf("list edge-hub-cli-topics failed: %v", err)
+		return
+	}
+	if len(*topics) <= 0 {
+		klog.Infof("list edge-hub-cli-topics status, no record, skip sync")
+		return
+	}
+	for _, t := range *topics {
+		m.tree.Set(t, packet.Subscription{Topic: t, QOS: packet.QOS(m.qos)})
+		klog.Infof("Subscribe internal topic to %s", t)
+	}
 }
 
 // SetTopic set the topic to internal mqtt broker.
@@ -133,7 +124,7 @@ func (m *Server) SetTopic(topic string) {
 	m.tree.Set(topic, packet.Subscription{Topic: topic, QOS: packet.QOSAtMostOnce})
 }
 
-// RemoveTopic remove the topic to internal mqtt broker.
+// RemoveTopic remove the topic from internal mqtt broker.
 func (m *Server) RemoveTopic(topic string) {
 	m.tree.Remove(topic, packet.Subscription{Topic: topic, QOS: packet.QOSAtMostOnce})
 }
@@ -148,5 +139,8 @@ func (m *Server) Publish(topic string, payload []byte) {
 		Payload: payload,
 		QOS:     packet.QOS(m.qos),
 	}
-	m.backend.Publish(client, msg, nil)
+	if err := m.backend.Publish(client, msg, nil); err != nil {
+		// TODO: handle error
+		klog.Error(err)
+	}
 }
